@@ -15,7 +15,7 @@ fails=0; n=0
 ok() { n=$((n + 1)); if [ "$1" = 0 ]; then echo "ok   $2"; else echo "FAIL $2"; fails=$((fails + 1)); [ -n "$3" ] && printf '%s\n' "$3" | sed 's/^/       /'; fi; }
 t() { local desc=$1; shift; local out; out=$("$@" 2>&1); ok $? "$desc" "$out"; }   # command must succeed
 tf() { local desc=$1; shift; local out; out=$("$@" 2>&1); [ $? != 0 ]; ok $? "$desc" "$out"; } # command must fail
-snapshot() { { cksum "$REAL_HOME/.claude/settings.json" "${REAL_CCD:-/nonexistent}/settings.json" 2>/dev/null; ls -ld "$REAL_HOME/.workbench" "$REAL_HOME/.config/workbench" "$REAL_HOME/.local/bin/workbench" 2>&1; ls "$REAL_HOME/.config/workbench" "$REAL_HOME/.local/bin" 2>&1; } | sed 's/ [A-Z][a-z][a-z] .*//' | cksum; }
+snapshot() { { cksum "$REAL_HOME/.claude/settings.json" "${REAL_CCD:-/nonexistent}/settings.json" 2>/dev/null; ls -ld "$REAL_HOME/.workbench" "$REAL_HOME/.config/workbench" "$REAL_HOME/.local/bin/workbench" /opt/homebrew/bin/workbench /usr/local/bin/workbench /opt/homebrew/bin/claude-worker /usr/local/bin/claude-worker 2>&1; ls "$REAL_HOME/.config/workbench" "$REAL_HOME/.local/bin" 2>&1; } | sed 's/ [A-Z][a-z][a-z] .*//' | cksum; }
 before_real=$(snapshot)
 real_plugin=$(claude plugin list 2>/dev/null | grep -c 'workbench@workbench')
 
@@ -31,7 +31,7 @@ if [ -n "$(ls -A "$REPO/kit/templates/workspace" 2>/dev/null)" ]; then echo "tem
 else export WORKBENCH_TEMPLATES="$REPO/tests/fixtures/templates"; echo "templates: tests/fixtures/templates (kit/templates/workspace is empty)"; fi
 
 # ---- 1. install ----
-inst=$("$REPO/install.sh" --no-plugin --config-dir "$HOME/.claude" 2>&1); ok $? "install.sh --no-plugin into the throwaway home" "$inst"
+inst=$("$REPO/install.sh" --no-plugin --config-dir "$HOME/.claude" --bin-dir "$HOME/.local/bin" 2>&1); ok $? "install.sh --no-plugin into the throwaway home" "$inst"
 WBH="$HOME/.workbench"
 ok "$([ "$(jq '[.hooks[]?[]?.hooks[]?.command] | length' "$HOME/.claude/settings.json")" = 3 ]; echo $?)" "three global hooks wired"
 hookcmd() { jq -r --arg n "$1" '.hooks[]?[]?.hooks[]? | select(.command|contains($n)) | .command' "$HOME/.claude/settings.json" | head -n1 | sed 's/^"//; s/"$//'; }
@@ -161,10 +161,10 @@ echo changed > "$E/seed-web-app/pkg.txt"; ( cd "$E/seed-web-app" && git checkout
 st=$(cd "$WS" && "$WB" status 2>&1); ok "$(printf '%s' "$st" | grep -q 'lockfile changed'; echo $?)" "status fast-forwards and flags a changed lockfile"
 
 # ---- 9. uninstall ----
-out=$("$REPO/install.sh" --uninstall --no-plugin --config-dir "$HOME/.claude" 2>&1); ok $? "install.sh --uninstall" "$out"
+out=$("$REPO/install.sh" --uninstall --no-plugin --config-dir "$HOME/.claude" --bin-dir "$HOME/.local/bin" 2>&1); ok $? "install.sh --uninstall" "$out"
 ok "$([ "$(jq '[.hooks[]?[]?.hooks[]?.command // empty | select(contains("/kit/hooks/"))] | length' "$HOME/.claude/settings.json")" = 0 ] && [ ! -e "$HOME/.local/bin/workbench" ] && [ -f "$WORKBENCH_CONFIG" ] && [ -f "$WS/workbench.json" ]; echo $?)" "hooks and links gone, config and workspace kept"
 
 # ---- the real machine was not touched ----
-ok "$([ "$(HOME=$REAL_HOME snapshot)" = "$before_real" ]; echo $?)" "real ~/.claude/settings.json, ~/.workbench, ~/.config/workbench, ~/.local/bin unchanged"
+ok "$([ "$(HOME=$REAL_HOME snapshot)" = "$before_real" ]; echo $?)" "real ~/.claude/settings.json, ~/.workbench, ~/.config/workbench and every bin folder unchanged"
 
 echo "$fails failed of $n"; exit $fails
