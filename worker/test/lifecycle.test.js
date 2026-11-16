@@ -49,7 +49,7 @@ test('worker launch: caffeinate, cwd, stdin brief, flags, guard hooks in --setti
     const settings = JSON.parse(fs.readFileSync(c.args[c.args.indexOf('--settings') + 1], 'utf8'));
     const hook = settings.hooks.PreToolUse[0];
     assert.strictEqual(hook.matcher, 'Bash');
-    assert.deepStrictEqual(hook.hooks.map(h => path.basename(h.command)), ['guard-git.sh', 'guard-release.sh']);
+    assert.deepStrictEqual(hook.hooks.map(h => path.basename(h.command.replace(/^'|'$/g, ''))), ['guard-git.sh', 'guard-release.sh']);
     assert.strictEqual(settings.disableAllHooks, false);
     assert.ok(!c.args.includes('--agent'));
   } finally { await w.cleanup(); }

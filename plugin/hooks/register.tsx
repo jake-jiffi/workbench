@@ -92,13 +92,16 @@ async function refresh($: EngineInterface) {
     const waiting = await readWaiting($)
     try {
       const repos = await Promise.all(currentApps().map(app => readRepo($, app)))
+      const failed = repos.find(r => r.prError)
+      // An app whose PR list could not be read keeps the PRs it last had; the error is shown in the foot.
       const after: Snapshot = {
-        prs: repos.flatMap(r => r.prs),
+        prs: repos.flatMap(r => r.prs ?? (before?.prs ?? []).filter(p => p.app === r.app)),
         releases: repos.map(r => r.release),
         waiting,
         at,
+        ...(failed ? { error: failed.prError } : {}),
       }
-      if (before && !before.error) {
+      if (before && !before.error && !failed) {
         announce($, before, after)
         const open = new Set(after.prs.map(p => `${p.app}#${p.number}`))
         const gone = before.prs.map(p => `${p.app}#${p.number}`).filter(k => !open.has(k))
@@ -394,10 +397,11 @@ export const register: Register = (on, options) => {
     settings.control.acct = settings.acct
     const wrapperPid = (await $.env.get('CLAUDE_WRAPPER_PID')) ?? ''
     settings.control.wrapperPid = /^\d+$/.test(wrapperPid) ? wrapperPid : ''
+    // A refused command (a name another plugin or skill already holds) must not cost the session its tools.
     await $.command.register({
       name: 'workbench',
       description: 'Open the Workbench pane: workers, PRs and CI across the workspace apps, what waits on the owner',
-    })
+    }).catch(() => {})
     const found = await findWorkspace($, e.cwd).catch(() => null)
     ws.current = found
     // The model's tools are registered once, here, and never again: the tool list stays fixed for the whole session.

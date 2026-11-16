@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 const FACTS = { model: 'opus', promptModel: 'opus', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] }
-import { PANE, WORKBENCH_JSON, WS_ROOT, gh, mocked, ran, seen, where, workspace } from './helpers'
+import { PANE, WORKBENCH_JSON, WS_ROOT, gh, mocked, override, ran, seen, where, workspace } from './helpers'
 import { check } from './helpers'
 import { k, mountPane, setup, texts, toolDefs, toolsRegistered } from './kit'
 import { parseWaiting } from '../hooks/lib/github'
@@ -148,7 +148,8 @@ test('apps come from workbench.json: each repo is read, and the Production card 
   await $.command.run({ command: 'workbench' })
   for (let i = 0; i < 60; i++) await Promise.resolve()
   const compares = gh_calls().filter(a => a[1] === 'api').map(a => a[2])
-  expect(compares.sort()).toEqual(['repos/acme/api/compare/release...develop', 'repos/acme/site/compare/main...main'])
+  // An app with one branch has nothing to compare.
+  expect(compares).toEqual(['repos/acme/api/compare/release...develop'])
   expect(gh_calls().filter(a => a.includes('list')).map(a => a[a.indexOf('--repo') + 1]).sort()).toEqual(['acme/api', 'acme/site'])
   const ui = await mountPane($)
   const t = await texts(ui)
@@ -158,7 +159,7 @@ test('apps come from workbench.json: each repo is read, and the Production card 
   expect(t).toMatch(/#7 → main\s+needs a review/)
   // The Production card names each app's own branches.
   expect(t).toMatch(/api\s+live c07208f8, develop 7fc50413/)
-  expect(t).toMatch(/site\s+live c07208f8, main 7fc50413/)
+  expect(t).toMatch(/site\s+one branch \(main\), nothing to release/)
   expect(t).not.toContain('staging')
   await ui.unmount()
 })
@@ -208,7 +209,7 @@ test('the owner\'s name is in the waiting card heading and the rows come from th
 
 // ---------- tools ----------
 
-const CASES: Array<[string, { cwd: string; list?: Array<{ name: string }>; files?: Record<string, string>; env?: Record<string, string> }, number]> = [
+const CASES: Array<[string, { cwd: string; list?: Array<{ name: string }>; files?: Record<string, string>; env?: Record<string, string>; git?: 'inside' | 'cannot-run' }, number]> = [
   ['empty, auto-init on', { cwd: '/work/new', list: [], files: AUTO }, 5],
   ['only .DS_Store', { cwd: '/work/new', list: [{ name: '.DS_Store' }], files: AUTO }, 5],
   ['has a file', { cwd: '/work/new', list: [{ name: 'notes.md' }], files: AUTO }, 0],
@@ -225,6 +226,22 @@ const CASES: Array<[string, { cwd: string; list?: Array<{ name: string }>; files
   ['under ~/Library', { cwd: '/Users/test/Library/x', list: [], files: AUTO }, 0],
   ['under the kit home', { cwd: '/opt/wb/x', list: [], files: AUTO, env: { WORKBENCH_HOME: '/opt/wb' } }, 0],
   ['under ~/.workbench', { cwd: '/Users/test/.workbench/x', list: [], files: AUTO }, 0],
+  ['a hidden folder below home', { cwd: '/Users/test/.ssh/x', list: [], files: AUTO }, 0],
+  ['a hidden segment deeper down', { cwd: '/Users/test/code/.cache/x', list: [], files: AUTO }, 0],
+  ['a hidden folder outside home is fine', { cwd: '/work/.new', list: [], files: AUTO }, 5],
+  ...['Desktop', 'Documents', 'Downloads', 'Movies', 'Music', 'Pictures', 'Public', 'Library', 'Applications', 'Sites', 'Dropbox', 'OneDrive', 'Google Drive', 'iCloud Drive', 'snap'].map(
+    (f): [string, { cwd: string; list: Array<{ name: string }>; files: Record<string, string> }, number] => [`the user folder ${f} itself`, { cwd: `/Users/test/${f}`, list: [], files: AUTO }, 0]),
+  ['a subfolder of Documents stays eligible', { cwd: '/Users/test/Documents/new-project', list: [], files: AUTO }, 5],
+  ['a subfolder of Dropbox stays eligible', { cwd: '/Users/test/Dropbox/new-project', list: [], files: AUTO }, 5],
+  ['inside a git work tree', { cwd: '/work/new', list: [], files: AUTO, git: 'inside' }, 0],
+  ['git cannot run', { cwd: '/work/new', list: [], files: AUTO, git: 'cannot-run' }, 0],
+  ['under /var/tmp', { cwd: '/var/tmp/x', list: [], files: AUTO }, 0],
+  ['under /private/var/tmp', { cwd: '/private/var/tmp/x', list: [], files: AUTO }, 0],
+  ['under /dev/shm', { cwd: '/dev/shm/x', list: [], files: AUTO }, 0],
+  ['under /run', { cwd: '/run/x', list: [], files: AUTO }, 0],
+  ['/Volumes itself', { cwd: '/Volumes', list: [], files: AUTO }, 0],
+  ['/mnt itself', { cwd: '/mnt', list: [], files: AUTO }, 0],
+  ['a folder on a volume', { cwd: '/Volumes/Disk/new', list: [], files: AUTO }, 5],
   ['cannot be listed', { cwd: '/work/new', files: AUTO }, 0],
 ]
 
@@ -317,4 +334,70 @@ test('a session that moves out of the workspace goes quiet: status line cleared,
   expect(await texts(ui2)).toContain('Waiting on Sam')
   await ui2.unmount()
   void k
+})
+
+// ---------- the Production card when GitHub cannot be read ----------
+
+const DEMO = JSON.stringify({ owner: 'Sam', apps: [{ name: 'web', repo: 'fixtures/demo-app', integration: 'staging', production: 'main' }] })
+const gitCalls = () => ran.filter(a => a[0] === 'git')
+const refreshNow = async ($: any) => {
+  await $.command.run({ command: 'workbench' })
+  for (let i = 0; i < 80; i++) await Promise.resolve()
+}
+
+test('GitHub fails, the local clone answers: the count comes from git, one git call for the app', async ($: any, on: any) => {
+  await setup($, on)
+  workspace.json = DEMO
+  override.handler = argv => {
+    if (argv[0] === 'gh') return { exitCode: 1, stdout: '', stderr: 'GraphQL: Could not resolve to a Repository' }
+    if (argv[0] === 'git') return { exitCode: 0, stdout: '3\n' }
+    return undefined
+  }
+  ran.length = 0
+  await refreshNow($)
+  expect(gitCalls()).toEqual([['git', '-C', `${WS_ROOT}/apps/web`, 'rev-list', '--count', 'origin/main..origin/staging']])
+  const ui = await mountPane($)
+  const t = await texts(ui)
+  expect(t).toMatch(/web\s+staging vs main, local clone\s+3 commits to release/)
+  expect(t).not.toContain('No apps yet')
+  expect(t).not.toContain("can't be read")
+  await ui.unmount()
+})
+
+test('GitHub and the local clone both fail: the app has its own row saying so, never "No apps yet"', async ($: any, on: any) => {
+  await setup($, on)
+  workspace.json = DEMO
+  override.handler = argv => {
+    if (argv[0] === 'gh') return { exitCode: 1, stdout: '', stderr: 'HTTP 404: Not Found' }
+    if (argv[0] === 'git') return { exitCode: 128, stdout: '', stderr: 'fatal: cannot change to \'/work/acme/apps/web\': No such file or directory' }
+    return undefined
+  }
+  await refreshNow($)
+  const ui = await mountPane($)
+  const t = await texts(ui)
+  expect(t).toMatch(/web\s+can't be read: GitHub: HTTP 404: Not Found; local: no clone at apps\/web/)
+  expect(t).not.toContain('No apps yet')
+  await ui.unmount()
+})
+
+test('a git answer that is not a count is a failure, not a zero', async ($: any, on: any) => {
+  await setup($, on)
+  workspace.json = DEMO
+  override.handler = argv => (argv[0] === 'gh' ? { exitCode: 1, stdout: '', stderr: 'offline' } : argv[0] === 'git' ? { exitCode: 0, stdout: 'oops' } : undefined)
+  await refreshNow($)
+  const ui = await mountPane($)
+  expect(await texts(ui)).toMatch(/web\s+can't be read/)
+  await ui.unmount()
+})
+
+test('an app named with a path in workbench.json is never read from outside apps/', async ($: any, on: any) => {
+  await setup($, on)
+  workspace.json = JSON.stringify({ apps: [{ name: '../../etc', repo: 'a/b', integration: 'dev', production: 'main' }] })
+  override.handler = argv => (argv[0] === 'gh' ? { exitCode: 1, stdout: '', stderr: 'offline' } : undefined)
+  ran.length = 0
+  await refreshNow($)
+  expect(gitCalls()).toEqual([])
+  const ui = await mountPane($)
+  expect(await texts(ui)).toMatch(/can't be read/)
+  await ui.unmount()
 })

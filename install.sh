@@ -22,7 +22,13 @@ while [ $# -gt 0 ]; do
     *) echo "install.sh: unknown option $1 (try --help)" >&2; exit 2 ;;
   esac
 done
-[ -n "$BIN_DIR" ] || BIN_DIR="$HOME/.local/bin"
+if [ -z "$BIN_DIR" ]; then
+  # The first writable folder already on PATH, so `workbench` works in every new shell; else ~/.local/bin.
+  for d in "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin; do
+    case ":$PATH:" in *":$d:"*) [ -d "$d" ] && [ -w "$d" ] && { BIN_DIR=$d; break; } ;; esac
+  done
+  [ -n "$BIN_DIR" ] || BIN_DIR="$HOME/.local/bin"
+fi
 [ ${#CONFIG_DIRS[@]} -gt 0 ] || CONFIG_DIRS=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
 CFG_FILE="${WORKBENCH_CONFIG:-$HOME/.config/workbench/config.json}"
 WB_LINK="$HOME/.workbench"
@@ -89,9 +95,15 @@ settings_apply() {
     bad "$sf is not valid JSON or has an unexpected hooks shape: left untouched. Fix it, then run again."; return 1
   fi
   if [ "$what" = add ]; then
-    new=$(jq --arg ss "$CMD_SS" --arg gg "$CMD_GG" --arg gr "$CMD_GR" "$JQ_ADD" "$real") || { bad "jq failed on $sf"; return 1; }
+    # The pane's Accounts card reads its own option: seed it from the private config, once, never over a value already set.
+    local acc
+    acc=$(jq -r '[.accounts[]? | select((.label|type)=="string" and (.dir|type)=="string") | "\(.label)=\(.dir)"] | join(", ")' "$CFG_FILE" 2>/dev/null)
+    new=$(jq --arg ss "$CMD_SS" --arg gg "$CMD_GG" --arg gr "$CMD_GR" --arg acc "$acc" "$JQ_ADD"'
+      | if ($acc != "") and ((.pluginConfigs["workbench@workbench"].options.accounts // "") == "")
+        then .pluginConfigs["workbench@workbench"].options.accounts = $acc else . end' "$real") || { bad "jq failed on $sf"; return 1; }
   else
-    new=$(jq "$JQ_STRIP" "$real") || { bad "jq failed on $sf"; return 1; }
+    new=$(jq "$JQ_STRIP"'
+      | if (.pluginConfigs|type)=="object" then del(.pluginConfigs["workbench@workbench"]) | (if .pluginConfigs == {} then del(.pluginConfigs) else . end) else . end' "$real") || { bad "jq failed on $sf"; return 1; }
   fi
   cur=$(jq -S . "$real"); if [ "$(printf '%s' "$new" | jq -S .)" = "$cur" ]; then
     say "  ok   $sf already up to date"; return 0
@@ -170,7 +182,7 @@ home_link() { # home_link <add|remove>
 
 write_config() {
   if [ -e "$CFG_FILE" ]; then say "  ok   $CFG_FILE exists (never overwritten)"; return 0; fi
-  local owner; owner=$(git config --get user.name 2>/dev/null | awk '{print $1}'); [ -n "$owner" ] || owner=$(id -un 2>/dev/null)
+  local owner; owner=$(cd "$HOME" 2>/dev/null && git config --global --get user.name 2>/dev/null | awk '{print $1}'); [ -n "$owner" ] || owner=$(id -un 2>/dev/null)
   [ "$DRY" = 1 ] && { plan "write $CFG_FILE (owner: $owner)"; return 0; }
   mkdir -p "$(dirname "$CFG_FILE")" || { bad "cannot create $(dirname "$CFG_FILE")"; return 1; }
   jq -n --arg o "$owner" '{owner:$o, autoInit:true, accounts:[{label:"main", dir:"~/.claude"}], protectedBranches:["main","staging"], models:{orchestrator:"opus", builder:"sonnet"}}' > "$CFG_FILE" \

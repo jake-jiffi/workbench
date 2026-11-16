@@ -1,5 +1,5 @@
 ---
-name: workbench
+name: workspace
 description: Set up and run a workbench workspace, the one-orchestrator, many-builders way of working in Claude Code. Use when someone wants to start a project in this folder, turn a folder into a workspace, add an app or repo to the workspace, make or close a worktree for a builder, check the setup ("workbench doctor", "is everything wired up"), or asks how the workspace, the pane, the guard hooks, left undone or claude-worker work.
 ---
 

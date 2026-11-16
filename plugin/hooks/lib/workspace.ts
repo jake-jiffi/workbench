@@ -83,25 +83,52 @@ export async function findWorkspace($: EngineInterface, start: string | undefine
   return null
 }
 
-const EXCLUDED = ['/tmp', '/private/tmp', '/var/folders', '/private/var/folders']
+const EXCLUDED = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp', '/var/folders', '/private/var/folders', '/dev/shm', '/run']
+// The standard user folders: not eligible themselves, their subfolders are.
+const USER_FOLDERS = ['Desktop', 'Documents', 'Downloads', 'Movies', 'Music', 'Pictures', 'Public', 'Library', 'Applications', 'Sites', 'Dropbox', 'OneDrive', 'Google Drive', 'iCloud Drive', 'snap']
 
-const under = (path: string, base: string) => Boolean(base) && (path === base || path.startsWith(`${base.replace(/\/+$/, '')}/`))
+const trimSlash = (p: string) => p.replace(/\/+$/, '')
+const under = (path: string, base: string) => Boolean(base) && (path === base || path.startsWith(`${base}/`))
 
 /**
- * Whether session-start.sh would auto-init this folder: it exists, holds nothing but .DS_Store, is not the home
- * folder or `/`, and is not under a temp, config or library folder or the kit's own home. (Being inside a workspace
- * is checked by the caller.) Used only to decide whether to register the model's tools, so a wrong "yes" costs
- * a few tool definitions and a wrong "no" costs the tools until the next session.
+ * Whether session-start.sh would auto-init this folder: the same rule as `wb_eligible` in kit/lib/common.sh, which is
+ * the source of truth. It exists and holds nothing but .DS_Store; it is not `/` or the home folder; not under a temp,
+ * system, config or library folder or the kit's own home; no hidden path segment below the home folder; not one of the
+ * standard user folders itself; not /Volumes or /mnt itself; and not inside a git work tree (git that cannot run
+ * counts as inside). (Being inside a workspace is checked by the caller.) Used only to decide whether to register the
+ * model's tools: a wrong "yes" costs a few tool definitions, a wrong "no" costs the tools until the next session.
  */
 export async function isEligibleEmpty($: EngineInterface, dir: string | undefined, home: string, tmp: string, workbenchHome: string): Promise<boolean> {
   if (!dir || !dir.startsWith('/')) return false
-  const path = dir.replace(/\/+$/, '') || '/'
-  if (path === '/' || (home && path === home.replace(/\/+$/, ''))) return false
-  const barred = [...EXCLUDED, tmp, home && `${home}/.claude`, home && `${home}/.config`, home && `${home}/Library`, workbenchHome || (home && `${home}/.workbench`)]
-  if (barred.some(b => b && under(path, b.replace(/\/+$/, '')))) return false
+  const physical = async (p: string) => (await $.fs.stat(p, { resolve: true }).catch(() => undefined))?.realPath ?? p
+  const given = trimSlash(dir) || '/'
+  const path = trimSlash(await physical(given)) || '/'
+  if (path === '/') return false
+  const homes = [...new Set([trimSlash(home), trimSlash(home ? await physical(home) : '')].filter(Boolean))]
+  if (homes.some(h => path === h || given === h)) return false
+  const bases = [...EXCLUDED, tmp, home && `${home}/.claude`, home && `${home}/.config`, home && `${home}/Library`, workbenchHome || (home && `${home}/.workbench`)]
+  for (const raw of bases) {
+    const x = trimSlash(raw || '')
+    if (!x || homes.includes(x)) continue
+    for (const ex of new Set([x, trimSlash(await physical(x))])) if (ex && (under(path, ex) || under(given, ex))) return false
+  }
+  if (path === '/Volumes' || path === '/mnt') return false
+  for (const h of homes) {
+    if (!path.startsWith(`${h}/`)) continue
+    const rel = path.slice(h.length + 1)
+    if (USER_FOLDERS.includes(rel)) return false
+    if (rel.split('/').some(seg => seg.startsWith('.'))) return false
+  }
   const entries = await $.fs.list(path).catch(() => undefined)
-  if (!entries) return false
-  return entries.every(e => e.name === '.DS_Store')
+  if (!entries || !entries.every(e => e.name === '.DS_Store')) return false
+  try {
+    const ran = await $.process.run(['git', '-C', path, 'rev-parse', '--is-inside-work-tree'], { cwd: '/' })
+    if (ran.stdout.trim() === 'true') return false
+    // Outside a repository git says so; any other failure (not installed, not runnable) is "cannot tell", so not eligible.
+    return ran.exitCode === 0 || /not a git repository/i.test(ran.stderr)
+  } catch {
+    return false
+  }
 }
 
 /** The auto-init switches session-start.sh reads: WORKBENCH_AUTO is not 0 and the private config says autoInit true. */

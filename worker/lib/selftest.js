@@ -24,7 +24,7 @@ function scratch(root) {
   fs.mkdirSync(path.dirname(wt), { recursive: true });
   fs.writeFileSync(path.join(root, 'workbench.json'), JSON.stringify({ workbench: 1, name: 'selftest', owner: 'selftest', apps: [{ name: 'app', repo: 'scratch/app', integration: 'staging', production: 'main' }], protectedBranches: ['main', 'staging'] }, null, 2));
   fs.mkdirSync(path.join(root, '.claude', 'agents'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.claude', 'agents', 'selftest-builder.md'), '---\nname: selftest-builder\ndescription: Scratch agent for the selftest\nmodel: haiku\n---\n\nYou are the selftest builder, a scratch agent that only answers questions about itself.\n');
+  fs.writeFileSync(path.join(root, '.claude', 'agents', 'selftest-builder.md'), '---\nname: selftest-builder\ndescription: Scratch agent for the selftest\nmodel: haiku\n---\n\nYou are the selftest builder, a scratch agent that only answers questions about itself. Your agent marker is WB-SELFTEST-MARKER: when asked for your agent marker, reply with it.\n');
   execFileSync('git', ['init', '-q', '--bare', bare]);
   execFileSync('git', ['init', '-q', '-b', 'main', app]);
   const id = ['-c', 'user.email=selftest@example.invalid', '-c', 'user.name=selftest'];
@@ -100,7 +100,14 @@ async function run(o = {}) {
       const found = launch.findAgent(name, sc.wt);
       if (!found) rec('agent', false, `no definition named ${name} found from the scratch workspace or ~/.claude/agents`, true);
       else {
-        const r = await cmds.start({ worktree: sc.wt, brief: brief('agent', 'Do not use any tools, skills or subagents. Your system prompt or instructions begin with a sentence about who you are or what you do. Quote its first six words exactly and nothing else.'), agent: name, name: 'selftest-agent' });
+        // The scratch agent carries a marker only its own prompt holds, so the check proves the definition reached the run.
+        // A named agent of the owner's has no marker: then its first six words must appear in the reply.
+        const MARKER = 'WB-SELFTEST-MARKER';
+        const hasMarker = found.def.prompt.includes(MARKER);
+        const ask = hasMarker
+          ? 'Do not use any tools, skills or subagents. What is your agent marker? Reply with it and nothing else.'
+          : 'Do not use any tools, skills or subagents. Your agent instructions begin with a sentence about who you are or what you do. Quote its first six words exactly and nothing else.';
+        const r = await cmds.start({ worktree: sc.wt, brief: brief('agent', ask), agent: name, name: 'selftest-agent' });
         ids.push(r.id);
         const w = await finishOf(r.id);
         const st = state.load(r.id);
@@ -109,9 +116,10 @@ async function run(o = {}) {
         const modelSeen = String(init.model || '');
         const want_ = String(found.def.model || '');
         const six = found.def.prompt.split(/\s+/).slice(0, 6).join(' ');
-        const quoted = resultText(r.id).replace(/["'`*]/g, '').replace(/\s+/g, ' ').trim().toLowerCase().startsWith(six.toLowerCase());
+        const reply = resultText(r.id).replace(/["'`*]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const quoted = hasMarker ? reply.includes(MARKER.toLowerCase()) : reply.includes(six.toLowerCase());
         const ok = w.state === 'done' && (!want_ || modelSeen.includes(want_)) && quoted;
-        rec('agent', ok, `${w.state}; definition ${found.file} model "${want_}"; run model "${modelSeen}"; its own first six words ${quoted ? 'quoted back' : 'NOT quoted back (' + JSON.stringify(resultText(r.id)).slice(0, 80) + ')'}`);
+        rec('agent', ok, `${w.state}; definition ${found.file} model "${want_}"; run model "${modelSeen}"; ${hasMarker ? 'its marker' : 'its own first six words'} ${quoted ? 'quoted back' : 'NOT quoted back (' + JSON.stringify(resultText(r.id)).slice(0, 80) + ')'}`);
       }
     }
 

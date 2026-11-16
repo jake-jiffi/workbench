@@ -154,15 +154,18 @@ wb_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 wb_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
 
 # wb_eligible <physical dir>: can session-start auto-init this folder? Silent, 0 = yes.
+# Never: /, $HOME, a folder inside a workspace, temp and system folders, config folders, any folder with a hidden
+# path segment below $HOME (~/.ssh, ~/.local/x), the standard user folders themselves (Desktop, Documents, ...),
+# /Volumes and /mnt themselves, anything inside a git work tree, or anything that holds files.
 wb_eligible() {
-  local d=$1 home_p wh x ex
+  local d=$1 home_p wh x ex h rel seg
   [ -d "$d" ] || return 1
   [ "$d" = "/" ] && return 1
   home_p=$(wb_physical "$HOME")
   [ "$d" = "$HOME" ] || [ "$d" = "$home_p" ] && return 1
   wb_find_root "$d" >/dev/null && return 1
   wh=${WORKBENCH_HOME:-$HOME/.workbench}
-  for x in "${TMPDIR:-}" /tmp /private/tmp /var/folders /private/var/folders \
+  for x in "${TMPDIR:-}" /tmp /private/tmp /var/tmp /private/var/tmp /var/folders /private/var/folders /dev/shm /run \
            "$HOME/.claude" "$HOME/.config" "$HOME/Library" "$wh"; do
     [ -n "$x" ] || continue
     x=${x%/}; [ -n "$x" ] || continue
@@ -172,5 +175,18 @@ wb_eligible() {
       case "$d" in "$ex"|"$ex"/*) return 1 ;; esac
     done
   done
-  [ -z "$(find "$d" -mindepth 1 -maxdepth 1 ! -name .DS_Store 2>/dev/null | head -n 1)" ]
+  case "$d" in /Volumes|/mnt) return 1 ;; esac
+  for h in "$HOME" "$home_p"; do
+    case "$d" in "$h"/*) ;; *) continue ;; esac
+    rel=${d#"$h"/}
+    case "$rel" in
+      Desktop|Documents|Downloads|Movies|Music|Pictures|Public|Library|Applications|Sites|Dropbox|OneDrive|"Google Drive"|"iCloud Drive"|snap) return 1 ;;
+    esac
+    local IFS=/; set -f
+    for seg in $rel; do case "$seg" in .*) set +f; return 1 ;; esac; done
+    set +f
+  done
+  [ -z "$(find "$d" -mindepth 1 -maxdepth 1 ! -name .DS_Store 2>/dev/null | head -n 1)" ] || return 1
+  [ "$(git -C "$d" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && return 1
+  return 0
 }

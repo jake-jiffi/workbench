@@ -84,6 +84,9 @@ export const seen: { toasts: string[]; notices: string[]; filled: string[]; subm
 // Every command the mod ran through the engine, by argv, in order.
 export const ran: string[][] = []
 
+// A test's own answer for a command (git, or a failing gh); undefined falls through to the defaults.
+export const override: { handler?: (argv: string[]) => { exitCode: number; stdout: string; stderr?: string } | undefined } = {}
+
 export function engine(on: any, processRun?: (_: unknown, e: { argv: string[] }) => unknown, state: string | ((path?: string) => string) = STATE, now: () => number = () => 1_762_140_000_000, env: Record<string, string> = { HOME: '/Users/test' }, store: Record<string, unknown> = {}, clock?: { now: number }) {
   gh.prs = PRS
   spawn.model = 'sonnet'
@@ -96,6 +99,7 @@ export function engine(on: any, processRun?: (_: unknown, e: { argv: string[] })
   seen.written.length = 0
   seen.opened = 0
   ran.length = 0
+  override.handler = undefined
   on('fs.write', (_: unknown, e: { path: string; text: string }) => { seen.written.push({ path: e.path, text: e.text }); return { value: undefined } })
   on('prompt.fill', (_: unknown, e: { text: string }) => { seen.filled.push(e.text); return { isFilled: true } })
   on('prompt.submit', (_: unknown, e: { text: string }) => { seen.submitted.push(e.text); return { text: e.text } })
@@ -169,6 +173,8 @@ export function withClaude(claude: (c: ClaudeCall) => { exitCode: number; stdout
   return (_: unknown, e: { argv: string[]; init?: { env?: Record<string, string>; cwd?: string } }) => {
     const out = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     ran.push(e.argv)
+    const forced = override.handler?.(e.argv)
+    if (forced) return out(forced.stdout, forced.exitCode, forced.stderr ?? '')
     let argv = e.argv
     const effective: Record<string, string> = { ...host, ...(e.init?.env ?? {}) }
     while (argv[0] === '/usr/bin/env' && argv[1] === '-u' && argv[2]) {

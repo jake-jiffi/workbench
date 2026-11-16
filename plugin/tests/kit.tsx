@@ -1,4 +1,4 @@
-import { PANE, files, gh, engine, where, withClaude, workspace } from './helpers'
+import { PANE, files, override, gh, engine, where, withClaude, workspace } from './helpers'
 import type { ClaudeCall } from './helpers'
 
 // A shared set-up for the account, swap and handover tests. Every address, folder and figure is invented.
@@ -40,12 +40,13 @@ function claude(c: ClaudeCall) {
   return dir === '/d/max' ? { exitCode: 1, stdout: '', stderr: USE[dir] } : { exitCode: 0, stdout: USE[dir] ?? '' }
 }
 
-export async function setup($: any, on: any, opts: { quiet?: boolean; env?: Record<string, string>; store?: Record<string, unknown>; clock?: boolean; host?: Record<string, string>; cwd?: string; list?: Array<{ name: string }>; noMarker?: boolean; root?: string; files?: Record<string, string> } = {}) {
+export async function setup($: any, on: any, opts: { quiet?: boolean; env?: Record<string, string>; store?: Record<string, unknown>; clock?: boolean; host?: Record<string, string>; cwd?: string; list?: Array<{ name: string }>; noMarker?: boolean; git?: 'inside' | 'cannot-run'; root?: string; files?: Record<string, string> } = {}) {
   resetKit()
   engine(on, withClaude(claude, calls, opts.host), undefined, () => k.now, { HOME: '/Users/test', ...opts.env }, opts.store, opts.clock ? { now: k.now } : undefined)
   if (opts.root) workspace.root = opts.root
   where.cwd = opts.cwd ?? opts.root ?? '/work/acme'
   if (opts.noMarker) workspace.json = null
+  if (opts.git) override.handler = argv => (argv[0] !== 'git' ? undefined : opts.git === 'inside' ? { exitCode: 0, stdout: 'true\n' } : { exitCode: 127, stdout: '', stderr: 'git: not found' })
   Object.assign(files, opts.files ?? {})
   // quiet: no PR into main, so no release is in flight
   if (opts.quiet) gh.prs = { 'acme/web-app': [], 'acme/mobile-app': [] }

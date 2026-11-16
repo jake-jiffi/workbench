@@ -45,7 +45,9 @@ export type Pr = {
 }
 
 // `live` and `head` are short commit ids: what the production branch is at, and what the integration branch is at.
-export type Release = { app: string; integration: string; production: string; ahead: number; live: string; head: string }
+// `isLocal`: counted from the local clone because GitHub could not be read (no short ids then). `isSingle`: the app has one
+// branch, so there is nothing to release. `error`: neither could be read, and says why in a few words.
+export type Release = { app: string; integration: string; production: string; ahead: number; live: string; head: string; isLocal?: boolean; isSingle?: boolean; error?: string }
 
 export type Snapshot = {
   prs: Pr[]

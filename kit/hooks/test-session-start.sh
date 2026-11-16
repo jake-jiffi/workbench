@@ -86,6 +86,26 @@ d="$B/f/off5"; empty_dir "$d"; echo '{"autoInit":"true"}' > "$H/off.json"; no_in
 d="$B/f/off6"; empty_dir "$d"; no_init "WORKBENCH_AUTO=0" startup "$d" WORKBENCH_AUTO=0
 d="$B/f/missing-dir-never"; no_init "cwd does not exist" startup "$d"
 
+# --- critic round: folders that look empty but are not a project folder ---
+d="$H/.ssh"; empty_dir "$d"; no_init "~/.ssh (hidden folder under HOME)" startup "$d"
+d="$H/.local/x"; empty_dir "$d"; no_init "~/.local/x (hidden segment)" startup "$d"
+d="$H/code/.hidden/proj"; empty_dir "$d"; no_init "hidden segment deeper down" startup "$d"
+for std in Desktop Documents Downloads Movies Music Pictures Public Applications Sites Dropbox OneDrive "Google Drive" "iCloud Drive" snap; do
+  d="$H/$std"; empty_dir "$d"; no_init "~/$std itself" startup "$d"
+done
+d="$H/Documents/new-project"; empty_dir "$d"; hook startup "$d"; ok "$(inited "$d"; echo $?)" "a subfolder of Documents is still eligible"
+d="$H/Dropbox/client/new"; empty_dir "$d"; hook startup "$d"; ok "$(inited "$d"; echo $?)" "a subfolder of Dropbox is still eligible"
+d="$H/newproj"; empty_dir "$d"; hook startup "$d"; ok "$(inited "$d"; echo $?)" "a new direct child of HOME is eligible"
+d="$B/f/gitrepo"; empty_dir "$d"; git init -q "$d"; no_init "an empty git repository" startup "$d"
+d="$B/f/gitrepo/sub"; empty_dir "$d"; no_init "an empty folder inside a git work tree" startup "$d"
+d="$B/f/gitdir-only"; empty_dir "$d"; git init -q --bare "$d" 2>/dev/null; no_init "a bare repository folder (not empty)" startup "$d"
+d=/var/tmp/wbut-$$; mkdir -p "$d"; no_init "/var/tmp" startup "$d"; rmdir "$d"
+elig() { ( . "$KIT/lib/common.sh"; wb_eligible "$1" ); }
+for sys in /Volumes /mnt /dev/shm /run; do
+  [ -d "$sys" ] || continue
+  elig "$sys"; ok "$([ $? != 0 ]; echo $?)" "$sys is not eligible"
+done
+
 # --- inside a workspace: nested empty folder is not inited; status prints ---
 ws="$B/f/empty"
 d="$ws/apps/nested-empty"; empty_dir "$d"

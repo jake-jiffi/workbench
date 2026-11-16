@@ -332,7 +332,10 @@ test('guard hooks are looked up at $WORKBENCH_HOME/kit/hooks; start refuses when
       assert.throws(() => launch.guardSettings(), /guard hooks missing.*guard-release\.sh/);
       fs.writeFileSync(path.join(wb, 'kit', 'hooks', 'guard-release.sh'), '#!/bin/bash\n', { mode: 0o755 });
       const g = launch.guardSettings();
-      assert.deepStrictEqual(g.hooks.PreToolUse[0].hooks.map(h => h.command), [path.join(wb, 'kit', 'hooks', 'guard-git.sh'), path.join(wb, 'kit', 'hooks', 'guard-release.sh')]);
+      assert.deepStrictEqual(g.hooks.PreToolUse[0].hooks.map(h => h.command), [`'${path.join(wb, 'kit', 'hooks', 'guard-git.sh')}'`, `'${path.join(wb, 'kit', 'hooks', 'guard-release.sh')}'`]);
+      // Quoted for the shell: a folder with a space in it still runs the guard.
+      const out = require('child_process').execSync(`sh -c ${JSON.stringify("printf '%s' " + g.hooks.PreToolUse[0].hooks[0].command)}`).toString();
+      assert.strictEqual(out, path.join(wb, 'kit', 'hooks', 'guard-git.sh'));
     });
     // the default home is ~/.workbench
     withEnv({ WORKBENCH_HOME: undefined, CLAUDE_WORKER_HOOKS_DIR: undefined, HOME: wb }, () => {

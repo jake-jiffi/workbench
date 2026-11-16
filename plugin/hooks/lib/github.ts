@@ -68,14 +68,61 @@ async function run($: EngineInterface, argv: string[]): Promise<string> {
   return ran.stdout
 }
 
-export async function readRepo($: EngineInterface, app: App): Promise<{ prs: Pr[]; release: Release }> {
+const oneLine = (e: unknown, max = 60) => (e instanceof Error ? e.message : String(e)).split('\n')[0]?.slice(0, max) ?? ''
+
+// An app's folder under the workspace: a plain name only, so the name can never climb out of apps/.
+const SAFE_NAME = /^[\w][\w.-]*$/
+
+/**
+ * How far the integration branch is ahead of production, from the main checkout at <root>/apps/<name>. One git
+ * call. It reads the remote-tracking branches as they stand, so it works for any git host and with no network.
+ */
+async function readLocal($: EngineInterface, app: App): Promise<{ ahead: number }> {
+  if (!SAFE_NAME.test(app.name)) throw new Error('no clone at apps/')
+  const dir = `${rootDir()}/apps/${app.name}`
+  const ran = await $.process.run(['git', '-C', dir, 'rev-list', '--count', `origin/${app.production}..origin/${app.integration}`], { cwd: rootDir() })
+  const count = Number.parseInt(ran.stdout.trim(), 10)
+  if (ran.exitCode !== 0 || !Number.isFinite(count)) {
+    const why = (ran.stderr || ran.stdout).trim()
+    throw new Error(/not a git repository|no such file|cannot change to/i.test(why) ? `no clone at apps/${app.name}` : oneLine(why.replace(/^fatal: /, ''), 40) || 'git failed')
+  }
+  return { ahead: count }
+}
+
+/** One app's release row. Never throws: a row says what it could read, or why it could not. */
+async function readRelease($: EngineInterface, app: App): Promise<Release> {
+  const base = { app: app.name, integration: app.integration, production: app.production }
+  // One branch: nothing to compare and nothing to release.
+  if (app.integration === app.production) return { ...base, ahead: 0, live: '', head: '', isSingle: true }
+  try {
+    const compare = await run($, [GH, 'api', `repos/${app.repo}/compare/${app.production}...${app.integration}`, '--jq',
+      '{ahead: .ahead_by, live: .base_commit.sha[0:8], head: ((.commits[-1].sha // .base_commit.sha)[0:8])}'])
+    return { ...base, ...JSON.parse(compare) }
+  } catch (github) {
+    try {
+      return { ...base, ahead: (await readLocal($, app)).ahead, live: '', head: '', isLocal: true }
+    } catch (local) {
+      return { ...base, ahead: 0, live: '', head: '', error: `GitHub: ${oneLine(github, 30)}; local: ${oneLine(local, 30)}` }
+    }
+  }
+}
+
+/**
+ * One app: its open PRs and its release row. The two reads are independent, and neither throws: a PR list that
+ * fails comes back as `prError` with `prs` null (the caller keeps the app's last PRs), and the release row falls
+ * back to the local clone when GitHub cannot be read.
+ */
+export async function readRepo($: EngineInterface, app: App): Promise<{ app: string; prs: Pr[] | null; prError?: string; release: Release }> {
   const fields = 'number,title,baseRefName,author,isDraft,reviewDecision,statusCheckRollup,url,labels'
-  const [list, compare] = await Promise.all([
-    run($, [GH, 'pr', 'list', '--repo', app.repo, '--state', 'open', '--limit', '50', '--json', fields]),
-    run($, [GH, 'api', `repos/${app.repo}/compare/${app.production}...${app.integration}`, '--jq',
-      '{ahead: .ahead_by, live: .base_commit.sha[0:8], head: ((.commits[-1].sha // .base_commit.sha)[0:8])}']),
+  const [list, release] = await Promise.all([
+    run($, [GH, 'pr', 'list', '--repo', app.repo, '--state', 'open', '--limit', '50', '--json', fields]).then(
+      text => ({ text }),
+      (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }),
+    ),
+    readRelease($, app),
   ])
-  const prs = (JSON.parse(list) as Array<Record<string, any>>).map(p => ({
+  if ('error' in list) return { app: app.name, prs: null, prError: list.error, release }
+  const prs = (JSON.parse(list.text) as Array<Record<string, any>>).map(p => ({
     app: app.name,
     number: p.number,
     title: p.title,
@@ -89,7 +136,7 @@ export async function readRepo($: EngineInterface, app: App): Promise<{ prs: Pr[
     checks: countChecks(p.statusCheckRollup, app.noRunner),
     url: p.url,
   }))
-  return { prs, release: { app: app.name, integration: app.integration, production: app.production, ...JSON.parse(compare) } }
+  return { app: app.name, prs, release }
 }
 
 export async function readWaiting($: EngineInterface): Promise<string[]> {

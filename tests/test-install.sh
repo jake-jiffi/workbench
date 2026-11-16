@@ -35,6 +35,18 @@ inst() { /bin/bash "$REPO/install.sh" "$@"; }
 count_ours() { jq '[.hooks[]?[]?.hooks[]?.command // empty | select(test("/kit/hooks/(session-start|guard-git|guard-release)\\.sh"))] | length' "$1"; }
 BASE='{"theme":"dark","env":{"A":"1"},"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"/x/other.sh","timeout":5}]},{"matcher":"Bash","hooks":[{"type":"command","command":"/x/mine.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"echo hi"}]}],"SessionStart":[{"matcher":"resume","hooks":[{"type":"command","command":"/x/resume.sh"}]}]},"permissions":{"allow":["Bash(ls)"],"deny":[]},"n":[1,2.5,null,true]}'
 
+# 0. accounts seed the pane's option once, and never over a value already set
+new_home acc; mkdir -p "$(dirname "$WORKBENCH_CONFIG")"
+printf '%s' '{"owner":"Sam","autoInit":true,"accounts":[{"label":"main","dir":"~/.claude"},{"label":"work","dir":"~/.claude-work"}]}' > "$WORKBENCH_CONFIG"
+echo '{}' > "$H/.claude/settings.json"
+inst --no-plugin --config-dir "$H/.claude" >/dev/null 2>&1
+ok "$([ "$(jq -r '.pluginConfigs["workbench@workbench"].options.accounts' "$H/.claude/settings.json")" = 'main=~/.claude, work=~/.claude-work' ]; echo $?)" "accounts from the config seed the pane's accounts option"
+jq '.pluginConfigs["workbench@workbench"].options.accounts = "mine=/x"' "$H/.claude/settings.json" > "$T/s" && mv "$T/s" "$H/.claude/settings.json"
+inst --no-plugin --config-dir "$H/.claude" >/dev/null 2>&1
+ok "$([ "$(jq -r '.pluginConfigs["workbench@workbench"].options.accounts' "$H/.claude/settings.json")" = 'mine=/x' ]; echo $?)" "a value already set is never overwritten"
+inst --uninstall --no-plugin --config-dir "$H/.claude" >/dev/null 2>&1
+ok "$(jq -e '(.pluginConfigs // {}) | has("workbench@workbench") | not' "$H/.claude/settings.json" >/dev/null; echo $?)" "uninstall removes the pane's option"
+
 # 1. dry run changes nothing and prints a plan
 new_home dry; echo "$BASE" > "$H/.claude/settings.json"; before=$(cat "$H/.claude/settings.json")
 out=$(inst --dry-run --no-plugin 2>&1); rc=$?

@@ -35,7 +35,6 @@ run() { # run <expect 0|2> <name> <command> [cwd]
 # Not shipping: always allowed, review or not.
 run 0 "plain git" "git status"
 run 0 "PR into integration" "gh pr create --base staging --title x"
-run 0 "PR with no base" "gh pr create --title x"
 run 0 "npm run deploy-staging is not deploy" "npm run deploy-staging"
 run 0 "merge of a staging PR" "gh pr merge 8 --squash"
 run 0 "merge of an unknown PR (gh fails)" "gh pr merge 99 --squash"
@@ -45,6 +44,23 @@ npm run deploy
 gh pr create --base main
 EOF"
 run 0 "echo of a ship command" "echo 'npm run deploy'"
+
+# A bare gh pr create goes to the default (production) branch.
+run 2 "bare PR at the workspace root" "gh pr create --title x"
+run 2 "bare PR in apps/web" "gh pr create --title x" "$R/apps/web"
+run 2 "bare PR in a web worktree" "gh pr create --fill" "$R/worktrees/web/x"
+run 2 "bare PR after cd into web" "cd apps/web && gh pr create --title x"
+run 2 "bare PR with -R web repo" "gh pr create -R acme/web-app --title x" "$R/apps/solo"
+run 2 "bare PR with --repo= web repo" "gh pr create --repo=acme/web-app" "$R/apps/solo"
+run 2 "bare PR in an unknown folder" "gh pr create --title x" "$R/notes"
+run 2 "bare PR in the api app" "gh pr create" "$R/apps/api"
+run 0 "bare PR in a single-branch app" "gh pr create --title x" "$R/apps/solo"
+run 0 "bare PR after cd into a single-branch app" "cd apps/solo && gh pr create" 
+run 0 "bare PR with --repo of a single-branch app" "gh pr create --repo acme/solo" "$R/apps/web"
+run 0 "PR with --base staging from web" "gh pr create --base staging --title x" "$R/apps/web"
+run 0 "PR with -B develop from api" "gh pr create -B develop" "$R/apps/api"
+run 0 "bare PR outside a workspace" "gh pr create" "$tmp/plain"
+run 0 "a commit message that says gh pr create" "git commit -m 'run gh pr create later'" "$R/apps/web"
 
 # Shipping with no review file: blocked.
 run 2 "PR into main, no review" "gh pr create --base main --head release/2026-11-10"
@@ -80,6 +96,7 @@ run 2 "no Blocking line" "gh pr create --base main"
 # A fresh review with nothing blocking: allowed.
 printf 'scope: release\nU5 | done | proof\n\nBlocking: none\n' > "$REVIEW"
 run 0 "fresh review, PR" "gh pr create --base main"
+run 0 "fresh review, bare PR" "gh pr create --title x" "$R/apps/web"
 run 0 "fresh review, deploy" "npm run deploy"
 run 0 "fresh review, merge" "gh pr merge 7"
 printf 'x\nBlocking: none\n\n\n' > "$REVIEW"

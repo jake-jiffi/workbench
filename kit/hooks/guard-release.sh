@@ -56,6 +56,38 @@ if [ -n "$prod_alt" ] && has 'gh[[:space:]]+pr[[:space:]]+create' \
    && printf '%s' "$rawq" | grep -Eq -e "(--base|-B)[[:space:]=]+(${prod_alt})([[:space:]]|\$)"; then
   ships="opening a PR into a production branch"
 fi
+# A bare "gh pr create" (no --base/-B) opens the PR against the repo's default branch: the production branch.
+# Which app? -R/--repo, else the folder the command runs in (apps/<name>, worktrees/<name>/...), following cd.
+if [ -z "$ships" ] && has 'gh[[:space:]]+pr[[:space:]]+create' && ! printf '%s' "$rawq" | grep -Eq -e '(^|[[:space:]])(--base|-B)([[:space:]=]|$)'; then
+  cur=$dir; app=""; repo=""
+  while IFS= read -r seg; do
+    seg="${seg#"${seg%%[![:space:]({]*}"}"
+    case "$seg" in
+      cd\ *) t=$(wb_unmask "${seg#cd }"); t=${t%% *}; t=${t//\"/}; t=${t//\'/}; t=${t/#\~/$HOME}
+        case "$t" in /*) ;; *) t="$cur/$t" ;; esac
+        t=$(wb_normpath "$t"); [ -d "$t" ] && t=$(wb_physical "$t"); cur=$t ;;
+      *gh*pr*create*)
+        for tok in ${seg#*create}; do
+          case "$prev" in --repo|-R) repo=$tok ;; esac
+          case "$tok" in --repo=*) repo=${tok#--repo=} ;; esac
+          prev=$tok
+        done ;;
+    esac
+  done <<< "$(printf '%s\n' "$text" | awk '{ gsub(/&&|\|\||;|&|\|/, "\n"); print }')"
+  if [ -n "$repo" ]; then
+    app=$(jq -r --arg r "$repo" '.apps[]? | select(.repo == $r or (.repo // "" | endswith("/" + $r))) | .name' "$WJ" 2>/dev/null | head -n 1)
+  else
+    case "$cur" in
+      "$root"/apps/*|"$root"/worktrees/*) app=${cur#"$root"/}; app=${app#*/}; app=${app%%/*} ;;
+    esac
+  fi
+  if [ -n "$app" ] && jq -e --arg n "$app" '.apps[]? | select(.name == $n)' "$WJ" >/dev/null 2>&1; then
+    jq -e --arg n "$app" '.apps[]? | select(.name == $n and (.production // "") != "" and .production != (.integration // .production))' "$WJ" >/dev/null 2>&1 \
+      && ships="opening a PR with no --base (it goes to $app's production branch; pass --base <integration branch> for a normal PR)"
+  elif [ -n "$prod_alt" ]; then
+    ships="opening a PR with no --base (it goes to a production branch; pass --base <integration branch> for a normal PR)"
+  fi
+fi
 if [ -z "$ships" ]; then
   while IFS= read -r pat; do
     [ -z "$pat" ] && continue

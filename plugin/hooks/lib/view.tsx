@@ -5,7 +5,7 @@ import { card, innerWidth } from './cards'
 import type { Ui } from './cards'
 import { ago, fitLine, hhmm, trunc, wrapWords } from './format'
 import { ci, nextStep } from './github'
-import { ownerName } from './workspace'
+import { ownerName, ws } from './workspace'
 import { cardItems, isStale, sourceLabel } from './undone'
 import { isCwEnded, isSilentCW, runningCW, visibleCW } from './cworkers'
 import { RECENT_MS, isEnded, isQuietWorker, prsTone, waitingTone, workersTone } from './tones'
@@ -134,16 +134,18 @@ export function productionCard(c: Ctx, snap: Snapshot | null) {
   const { ui, room } = c
   const { Text } = ui
   const rows = (snap?.releases ?? []).map(r => {
+    if (r.error) return <Text key={`r-${r.app}`}>{r.app} <Text color="warning">{trunc(`can't be read: ${r.error}`, Math.max(8, room - r.app.length - 1))}</Text></Text>
+    if (r.isSingle) return <Text key={`r-${r.app}`}>{r.app} <Text dimColor>{trunc(`one branch (${r.production}), nothing to release`, Math.max(8, room - r.app.length - 1))}</Text></Text>
     const tail = r.ahead === 1 ? '1 commit to release' : r.ahead > 0 ? `${r.ahead} commits to release` : 'in step'
     return (
       <Text key={`r-${r.app}`}>
-        {r.app} <Text dimColor>{trunc(`live ${r.live}, ${r.integration} ${r.head}`, Math.max(4, room - r.app.length - tail.length - 3))}</Text>{' '}
+        {r.app} <Text dimColor>{trunc(r.isLocal ? `${r.integration} vs ${r.production}, local clone` : `live ${r.live}, ${r.integration} ${r.head}`, Math.max(4, room - r.app.length - tail.length - 3))}</Text>{' '}
         <Text color={r.ahead > 0 ? 'warning' : 'success'}>{tail}</Text>
       </Text>
     )
   })
   // Commits waiting to release are information, not an alarm: this card stays quiet.
-  return card({ ui, id: 'production', title: 'Production', tone: 'quiet', columns: c.columns, rows: rows.length ? rows : [<Text key="r-none" dimColor>{snap ? 'No apps yet: workbench add-app <owner/repo>.' : 'Loading…'}</Text>] })
+  return card({ ui, id: 'production', title: 'Production', tone: 'quiet', columns: c.columns, rows: rows.length ? rows : [<Text key="r-none" dimColor>{snap && (ws.current?.apps.length ?? 0) === 0 ? 'No apps yet: workbench add-app <owner/repo>.' : 'Loading…'}</Text>] })
 }
 
 // Rows shown before "and N more", so the header count and the list always agree.

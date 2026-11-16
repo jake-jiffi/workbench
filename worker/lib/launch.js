@@ -16,7 +16,7 @@ function guardSettings() {
   if (missing.length) throw new UserError('guard hooks missing, refusing to start a worker without them: ' + missing.join(', '));
   return {
     disableAllHooks: false,
-    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: guards.map(g => ({ type: 'command', command: g })) }] },
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: guards.map(g => ({ type: 'command', command: `'${g.replace(/'/g, `'\\''`)}'` })) }] },
   };
 }
 
