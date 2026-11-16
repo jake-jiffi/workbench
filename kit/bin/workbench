@@ -1,0 +1,483 @@
+#!/bin/bash
+# workbench: turn a folder into a Claude Code workspace and run it. See `workbench help`.
+# Bash 3.2 safe. Needs jq and git. Overrides for tests: WORKBENCH_HOME, WORKBENCH_CONFIG, WORKBENCH_TEMPLATES, HOME.
+WB_VERSION=1.0.0
+
+wb_self() { # physical folder of this script, following symlinks
+  local s=${BASH_SOURCE[0]} d
+  while [ -L "$s" ]; do
+    d=$(cd "$(dirname "$s")" && pwd); s=$(readlink "$s")
+    case "$s" in /*) ;; *) s="$d/$s" ;; esac
+  done
+  ( cd "$(dirname "$s")" && pwd -P )
+}
+BIN_DIR=$(wb_self)
+KIT=$(cd "$BIN_DIR/.." && pwd -P)
+REPO=$(cd "$KIT/.." && pwd -P)
+. "$KIT/lib/common.sh" || { echo "workbench: cannot load $KIT/lib/common.sh" >&2; exit 1; }
+. "$KIT/lib/status.sh"
+
+die() { echo "workbench: $*" >&2; exit 1; }
+note() { echo "workbench: $*" >&2; }
+need_jq() { command -v jq >/dev/null 2>&1 || die "jq is required (brew install jq)"; }
+
+# The path hooks and templates should use for this install: ~/.workbench when it points here, else the repo.
+embed_home() {
+  if [ -n "${WORKBENCH_HOME:-}" ]; then printf '%s' "${WORKBENCH_HOME%/}"; return; fi
+  local l="$HOME/.workbench"
+  if [ -e "$l" ] && [ "$(wb_physical "$l")" = "$REPO" ]; then printf '%s' "$l"; else printf '%s' "$REPO"; fi
+}
+templates_dir() { printf '%s' "${WORKBENCH_TEMPLATES:-$KIT/templates/workspace}"; }
+
+today() { date +%Y-%m-%d; }
+slugify() { local s; s=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-//; s/-$//'); printf '%s' "${s:-workspace}"; }
+sed_esc() { printf '%s' "$1" | tr '\n' ' ' | sed 's/[\\&|]/\\&/g'; }
+plain_esc() { printf '%s' "$1"; }
+json_esc() { printf '%s' "$1" | tr '\n' ' ' | jq -Rrj 'tojson | .[1:-1]'; }
+
+# workspace root from the current directory, or die
+need_root() {
+  local d r
+  d=$(wb_physical "$PWD"); [ -n "$d" ] || d=$PWD
+  r=$(wb_find_root "$d") || die "not inside a workspace (no workbench.json above $PWD). Run: workbench init"
+  printf '%s' "$r"
+}
+
+# atomic jq edit of a json file: json_edit <file> <jq args...>
+json_edit() {
+  local f=$1 tmp; shift
+  tmp=$(mktemp "$f.XXXXXX") || return 1
+  if jq "$@" "$f" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    chmod "$(wb_mode "$f" || echo 644)" "$tmp" 2>/dev/null
+    mv "$tmp" "$f"
+  else rm -f "$tmp"; return 1; fi
+}
+
+# ---- apps block in CLAUDE.md / AGENTS.md ----
+apps_block() { # apps_block <root>: the text between the markers
+  local rows
+  rows=$(jq -r '.apps[]? | "| `\(.name)` | `\(.repo // "")` | `\(.integration // .production // "main")` | `\(.production // .integration // "main")` | `apps/\(.name)` |"' "$1/workbench.json" 2>/dev/null)
+  if [ -z "$rows" ]; then echo 'No apps yet. Add one with `workbench add-app <owner/repo>`.'
+  else
+    echo '| App | Repo | Integration branch | Production branch | Main checkout |'
+    echo '|---|---|---|---|---|'
+    printf '%s\n' "$rows"
+  fi
+}
+write_apps_blocks() { # write_apps_blocks <root> [files...]
+  local root=$1 f blk tmp; shift
+  blk=$(mktemp) || return 1; apps_block "$root" > "$blk"
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    grep -q '<!-- workbench:apps -->' "$f" && grep -q '<!-- /workbench:apps -->' "$f" || { note "no apps block markers in $f, left alone"; continue; }
+    tmp=$(mktemp "$f.XXXXXX") || continue
+    awk -v blk="$blk" '
+      /<!-- workbench:apps -->/ { print; while ((getline l < blk) > 0) print l; close(blk); skip = 1; next }
+      /<!-- \/workbench:apps -->/ { skip = 0 }
+      !skip { print }' "$f" > "$tmp" && { chmod "$(wb_mode "$f" || echo 644)" "$tmp" 2>/dev/null; mv "$tmp" "$f"; } || rm -f "$tmp"
+  done
+  rm -f "$blk"
+}
+
+# ---- init ----
+cmd_init() {
+  need_jq
+  local dir="" name="" owner="" force=0 quiet=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) [ $# -ge 2 ] || die "--name needs a value"; name=$2; shift 2 ;;
+      --owner) [ $# -ge 2 ] || die "--owner needs a value"; owner=$2; shift 2 ;;
+      --force) force=1; shift ;;
+      --quiet) quiet=1; shift ;;
+      -h|--help) echo "usage: workbench init [dir] [--name N] [--owner O] [--force]"; return 0 ;;
+      -*) die "init: unknown option $1" ;;
+      *) [ -z "$dir" ] || die "init: one folder only"; dir=$1; shift ;;
+    esac
+  done
+  [ -n "$dir" ] || dir=$PWD
+  local tpl; tpl=$(templates_dir)
+  [ -d "$tpl" ] || die "templates not found at $tpl"
+  [ -d "$dir" ] || { [ -e "$dir" ] && die "$dir exists and is not a folder"; mkdir -p "$dir" || die "cannot create $dir"; }
+  local root; root=$(wb_physical "$dir"); [ -n "$root" ] || die "cannot enter $dir"
+  local home_p; home_p=$(wb_physical "$HOME")
+  [ "$root" = "/" ] && die "refusing to make / a workspace"
+  { [ "$root" = "$home_p" ] || [ "$root" = "$HOME" ]; } && die "refusing to make your home folder a workspace. Use a project folder."
+  local existing; existing=$(wb_find_root "$root")
+  [ -z "$existing" ] || die "$root is already inside the workspace $existing"
+  if [ "$force" = 0 ] && [ -n "$(find "$root" -mindepth 1 -maxdepth 1 ! -name .DS_Store ! -name '.workbench-stage.*' 2>/dev/null | head -n 1)" ]; then
+    die "$root is not empty. Use an empty folder, or --force to add only the missing files."
+  fi
+
+  # values
+  [ -n "$name" ] || name=$(basename "$root")
+  if [ -z "$owner" ]; then
+    owner=$(wb_cfg_get '.owner' "")
+    [ -n "$owner" ] || owner=$(git config user.name 2>/dev/null | awk '{print $1}')
+    [ -n "$owner" ] || owner=Owner
+  fi
+  local orch builder prot wbh date slug
+  orch=$(wb_cfg_get '.models.orchestrator' opus); builder=$(wb_cfg_get '.models.builder' sonnet)
+  prot=$(jq -c '.protectedBranches // ["main","staging"]' "$(wb_cfg_file)" 2>/dev/null); [ -n "$prot" ] || prot='["main","staging"]'
+  wbh=$(embed_home); date=$(today); slug=$(slugify "$name")
+
+  # Build everything in a stage folder on the same filesystem, then move files in without overwriting.
+  local stage; stage=$(mktemp -d "$root/.workbench-stage.XXXXXX") || die "cannot write to $root"
+  trap 'rm -rf "$stage"' EXIT
+  local rel out seg dest p esc
+  while IFS= read -r -d '' p; do
+    rel=${p#"$tpl"/}
+    out=""; local IFS=/; set -f
+    for seg in $rel; do case "$seg" in dot-*) seg=".${seg#dot-}" ;; esac; out="${out:+$out/}$seg"; done
+    IFS=$' \t\n'; set +f
+    [ "$out" = workbench.json ] && continue
+    dest="$stage/$out"; mkdir -p "$(dirname "$dest")"
+    if [ -L "$p" ]; then cp -P "$p" "$dest"
+    elif grep -Iq . "$p" 2>/dev/null; then
+      case "$out" in
+        *.json|*.toml) esc=json_esc ;;   # values land inside a quoted string: escape for JSON/TOML basic strings
+        *) esc=plain_esc ;;
+      esac
+      sed -e "s|{{OWNER}}|$(sed_esc "$($esc "$owner")")|g" -e "s|{{NAME}}|$(sed_esc "$($esc "$name")")|g" -e "s|{{SLUG}}|$(sed_esc "$($esc "$slug")")|g" \
+          -e "s|{{ROOT}}|$(sed_esc "$($esc "$root")")|g" -e "s|{{DATE}}|$date|g" -e "s|{{WORKBENCH_HOME}}|$(sed_esc "$($esc "$wbh")")|g" \
+          -e "s|{{ORCHESTRATOR_MODEL}}|$(sed_esc "$($esc "$orch")")|g" -e "s|{{BUILDER_MODEL}}|$(sed_esc "$($esc "$builder")")|g" "$p" > "$dest"
+      [ -x "$p" ] && chmod +x "$dest"
+    else cp -p "$p" "$dest"; fi
+  done < <(find "$tpl" \( -type f -o -type l \) -print0)
+  local d
+  for d in apps ops worktrees stacks data notes/specs notes/briefs notes/archive mods .claude/memory .claude/agents; do mkdir -p "$stage/$d"; done
+  chmod 700 "$stage/data"
+
+  # workbench.json (generated: exact JSON quoting whatever the owner's name holds)
+  # Default ship commands the release gate holds: an npm, pnpm or yarn deploy script, and a Vercel production deploy.
+  local ship='["(^|[[:space:];&|(])(npm|pnpm|yarn)[[:space:]]+(run[[:space:]]+)?deploy([[:space:]]|$)","(^|[[:space:];&|(])vercel([[:space:]]+deploy)?([[:space:]]+[^;&|]*)?[[:space:]]--prod([[:space:]=]|$)"]'
+  jq -n --arg name "$name" --arg owner "$owner" --arg date "$date" --argjson prot "$prot" --argjson ship "$ship" --arg o "$orch" --arg b "$builder" \
+    '{workbench:1, name:$name, owner:$owner, created:$date, apps:[], protectedBranches:$prot, shipPatterns:$ship, models:{orchestrator:$o, builder:$b}}' > "$stage/workbench.json" || die "cannot write workbench.json"
+
+  # .claude/settings.json: the template's (rendered above) or a minimal one, plus the local mods marketplace if it validates
+  mkdir -p "$stage/.claude"
+  [ -f "$stage/.claude/settings.json" ] && jq -e . "$stage/.claude/settings.json" >/dev/null 2>&1 || echo '{}' > "$stage/.claude/settings.json"
+  json_edit "$stage/.claude/settings.json" --arg m "$root/.claude/memory" '.autoMemoryDirectory = $m' || die "cannot write .claude/settings.json"
+  local mk="$stage/mods/.claude-plugin/marketplace.json" mname mkmsg="mods marketplace: none"
+  if [ -f "$mk" ]; then
+    mname=$(jq -r '.name // empty' "$mk" 2>/dev/null)
+    if [ -z "$mname" ]; then mkmsg="mods marketplace: not registered (marketplace.json has no name)"
+    elif ! command -v claude >/dev/null 2>&1; then mkmsg="mods marketplace: not registered (claude not found to validate it)"
+    elif wb_timeout 60 claude plugin validate "$stage/mods" >/dev/null 2>&1; then
+      json_edit "$stage/.claude/settings.json" --arg n "$mname" --arg p "$root/mods" '.extraKnownMarketplaces[$n] = {source:{source:"directory", path:$p}}' \
+        && mkmsg="mods marketplace: $mname registered"
+    else mkmsg="mods marketplace: not registered (claude plugin validate failed)"; fi
+  fi
+
+  # Move into place. Never overwrite. The marker goes last, so a crash leaves a folder that is not yet a workspace.
+  local created="" kept="" f
+  while IFS= read -r -d '' f; do
+    rel=${f#"$stage"/}; [ "$rel" = workbench.json ] && continue
+    mkdir -p "$(dirname "$root/$rel")"
+    if [ -e "$root/$rel" ] || [ -L "$root/$rel" ]; then kept="$kept$rel"$'\n'; continue; fi
+    mv -n "$f" "$root/$rel" 2>/dev/null
+    if [ -e "$f" ]; then kept="$kept$rel"$'\n'; else created="$created$rel"$'\n'; fi
+  done < <(find "$stage" \( -type f -o -type l \) -print0)
+  while IFS= read -r -d '' f; do mkdir -p "$root/${f#"$stage"/}"; done < <(find "$stage" -mindepth 1 -type d -print0)
+  chmod 700 "$root/data" 2>/dev/null
+  local blockfiles=""
+  case $'\n'"$created" in *$'\n'CLAUDE.md$'\n'*) blockfiles="$blockfiles $root/CLAUDE.md" ;; esac
+  case $'\n'"$created" in *$'\n'AGENTS.md$'\n'*) blockfiles="$blockfiles $root/AGENTS.md" ;; esac
+  mv -n "$stage/workbench.json" "$root/workbench.json" 2>/dev/null
+  [ -e "$stage/workbench.json" ] && die "another process created workbench.json first. Nothing was overwritten."
+  # apps blocks now that the marker exists
+  # shellcheck disable=SC2086
+  [ -n "$blockfiles" ] && write_apps_blocks "$root" $blockfiles
+  rm -rf "$stage"; trap - EXIT
+
+  if [ "$quiet" = 1 ]; then
+    printf '%s\n' "workbench.json" "$created" | grep -v '^$'
+    echo "$mkmsg"
+  else
+    echo "Created workspace '$name' for $owner at $root"
+    printf '%s\n' "workbench.json" "$created" | grep -v '^$' | sed 's/^/  + /'
+    [ -n "$kept" ] && { echo "Kept (already there, not touched):"; printf '%s' "$kept" | sed 's/^/  = /'; }
+    echo "$mkmsg"
+    echo "Next: cd $root && workbench add-app <owner/repo>"
+  fi
+}
+
+# ---- add-app ----
+detect_default_branch() { # detect_default_branch <checkout>
+  local b
+  b=$(git -C "$1" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null); b=${b#origin/}
+  [ -n "$b" ] || b=$(git -C "$1" ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/ {sub("refs/heads/","",$2); print $2; exit}')
+  [ -n "$b" ] || b=$(git -C "$1" branch --show-current 2>/dev/null)
+  printf '%s' "${b:-main}"
+}
+repo_slug() { # owner/repo from a url, path or owner/repo
+  local s=${1%/}; s=${s%.git}
+  case "$s" in
+    *://*|*@*:*) s=${s#*://}; s=${s#*@}; s=${s#*:}; s=${s#*/} ;;
+  esac
+  case "$s" in */*) printf '%s/%s' "$(basename "$(dirname "$s")")" "$(basename "$s")" ;; *) printf '%s' "$s" ;; esac
+}
+cmd_add_app() {
+  need_jq
+  local src="" name=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) [ $# -ge 2 ] || die "--name needs a value"; name=$2; shift 2 ;;
+      -h|--help) echo "usage: workbench add-app <owner/repo|git-url> [--name N]"; return 0 ;;
+      -*) die "add-app: unknown option $1" ;;
+      *) [ -z "$src" ] || die "add-app: one repo only"; src=$1; shift ;;
+    esac
+  done
+  [ -n "$src" ] || die "usage: workbench add-app <owner/repo|git-url> [--name N]"
+  local root; root=$(need_root) || exit 1
+  [ -n "$name" ] || { name=$(basename "${src%/}"); name=${name%.git}; }
+  case "$name" in ''|.|..|.*|*/*|*[!A-Za-z0-9._-]*) die "app name '$name' is not usable (letters, digits, . _ - only). Pass --name." ;; esac
+  local lock="$root/.workbench.lock"
+  wb_lock "$lock" 30 || die "another workbench command is changing this workspace"
+  trap 'wb_unlock "$lock"' EXIT
+  [ ! -e "$root/apps/$name" ] || die "apps/$name already exists"
+  jq -e --arg n "$name" '[.apps[]? | select(.name == $n)] | length == 0' "$root/workbench.json" >/dev/null 2>&1 || die "an app named $name is already in workbench.json"
+  mkdir -p "$root/apps"
+  local dest="$root/apps/$name" cloned=0
+  if printf '%s' "$src" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' && [ ! -e "$src" ]; then
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+      gh repo clone "$src" "$dest" >&2 && cloned=1
+    else
+      git clone "https://github.com/$src.git" "$dest" >&2 && cloned=1
+    fi
+  else
+    git clone "$src" "$dest" >&2 && cloned=1
+  fi
+  [ "$cloned" = 1 ] || { rm -rf "$dest"; die "clone failed"; }
+  local prod integ
+  prod=$(detect_default_branch "$dest")
+  if git -C "$dest" rev-parse --verify -q "refs/remotes/origin/staging" >/dev/null 2>&1; then integ=staging; else integ=$prod; fi
+  git -C "$dest" rev-parse --verify -q "refs/remotes/origin/$integ" >/dev/null 2>&1 || { rm -rf "$dest"; die "origin/$integ not found in the clone (empty repository?)"; }
+  if [ "$(git -C "$dest" branch --show-current)" != "$integ" ]; then
+    git -C "$dest" checkout -q "$integ" >&2 2>&1 || git -C "$dest" checkout -q -b "$integ" "origin/$integ" >&2 || { rm -rf "$dest"; die "cannot check out $integ"; }
+  fi
+  # settings.local.json: merge, never replace
+  mkdir -p "$dest/.claude"
+  local sl="$dest/.claude/settings.local.json"
+  [ -f "$sl" ] || echo '{}' > "$sl"
+  if jq -e 'type=="object"' "$sl" >/dev/null 2>&1; then
+    json_edit "$sl" --arg m "$root/.claude/memory" '.autoMemoryDirectory = $m | .worktree = ((.worktree // {}) + {baseRef:"head"})' || note "could not update $sl"
+  else note "$sl is not valid JSON: left alone. Add autoMemoryDirectory and worktree.baseRef by hand."; fi
+  local ex="$dest/.git/info/exclude"
+  [ -d "$dest/.git/info" ] && ! grep -qx '.claude/settings.local.json' "$ex" 2>/dev/null && echo '.claude/settings.local.json' >> "$ex"
+  json_edit "$root/workbench.json" --arg n "$name" --arg r "$(repo_slug "$src")" --arg i "$integ" --arg p "$prod" \
+    '.apps = ((.apps // []) + [{name:$n, repo:$r, integration:$i, production:$p}])' || die "could not update workbench.json (is it valid JSON?)"
+  write_apps_blocks "$root" "$root/CLAUDE.md" "$root/AGENTS.md"
+  wb_unlock "$lock"; trap - EXIT
+  echo "Added apps/$name ($(repo_slug "$src")): integration $integ, production $prod. Main checkout is on $integ."
+}
+
+# ---- worktree / done ----
+app_info() { # app_info <root> <app>: sets APP_DIR APP_INTEG
+  local root=$1 app=$2 row
+  case "$app" in ''|*/*|.|..) die "bad app name '$app'" ;; esac
+  row=$(jq -r --arg n "$app" '.apps[]? | select(.name == $n) | (.integration // .production // "main")' "$root/workbench.json" 2>/dev/null | head -n 1)
+  [ -n "$row" ] || die "no app named '$app' in workbench.json (apps: $(jq -r '[.apps[]?.name] | join(", ")' "$root/workbench.json" 2>/dev/null))"
+  APP_DIR="$root/apps/$app"; APP_INTEG=$row
+  [ -d "$APP_DIR/.git" ] || [ -f "$APP_DIR/.git" ] || die "apps/$app has no checkout"
+}
+wt_path() { local b=$3; printf '%s' "$1/worktrees/$2/${b//\//-}"; }
+check_branch() { git check-ref-format --branch "$1" >/dev/null 2>&1 || die "'$1' is not a valid branch name"; case "$1" in -*) die "branch name cannot start with -" ;; esac; }
+cmd_worktree() {
+  [ $# -eq 2 ] || die "usage: workbench worktree <app> <branch>"
+  local root; root=$(need_root) || exit 1; app_info "$root" "$1"; check_branch "$2"
+  local app=$1 branch=$2 wt; wt=$(wt_path "$root" "$app" "$branch")
+  [ ! -e "$wt" ] || die "$wt already exists"
+  git -C "$APP_DIR" show-ref --verify -q "refs/heads/$branch" && die "branch $branch already exists in apps/$app. Pick another name, or run: workbench done $app $branch"
+  mkdir -p "$root/worktrees/$app"
+  wb_timeout 60 git -C "$APP_DIR" fetch --quiet --prune origin >&2 || note "fetch failed or timed out: branching from the last fetched origin/$APP_INTEG"
+  git -C "$APP_DIR" rev-parse --verify -q "refs/remotes/origin/$APP_INTEG" >/dev/null || die "origin/$APP_INTEG does not exist in apps/$app"
+  git -C "$APP_DIR" worktree add --no-track -q -b "$branch" "$wt" "origin/$APP_INTEG" >&2 || die "git worktree add failed"
+  # node_modules: link the main checkout's, for package.json folders at depth 0 and 1
+  local pj sub
+  for pj in "$APP_DIR/package.json" "$APP_DIR"/*/package.json; do
+    [ -f "$pj" ] || continue
+    sub=$(dirname "$pj"); sub=${sub#"$APP_DIR"}; sub=${sub#/}
+    case "$sub" in node_modules|.git) continue ;; esac
+    [ -d "$APP_DIR${sub:+/$sub}/node_modules" ] || continue
+    [ -d "$wt${sub:+/$sub}" ] || continue
+    [ -e "$wt${sub:+/$sub}/node_modules" ] || [ -L "$wt${sub:+/$sub}/node_modules" ] && continue
+    ln -s "$APP_DIR${sub:+/$sub}/node_modules" "$wt${sub:+/$sub}/node_modules"
+  done
+  printf '%s\n' "$wt"
+}
+cmd_done() {
+  local force=0 args=()
+  while [ $# -gt 0 ]; do case "$1" in --force) force=1; shift ;; *) args+=("$1"); shift ;; esac; done
+  [ ${#args[@]} -eq 2 ] || die "usage: workbench done <app> <branch> [--force]"
+  local root; root=$(need_root) || exit 1; app_info "$root" "${args[0]}"; check_branch "${args[1]}"
+  local app=${args[0]} branch=${args[1]} wt; wt=$(wt_path "$root" "$app" "$branch")
+  if [ -d "$wt" ]; then
+    # drop the node_modules links we made: an untracked symlink would count as a dirty worktree
+    local l; for l in "$wt/node_modules" "$wt"/*/node_modules; do
+      [ -L "$l" ] && case "$(readlink "$l")" in "$APP_DIR"/*) rm -f "$l" ;; esac
+    done
+    if [ "$force" = 1 ]; then git -C "$APP_DIR" worktree remove --force "$wt" >&2 || die "could not remove $wt"
+    else git -C "$APP_DIR" worktree remove "$wt" >&2 || die "could not remove $wt (uncommitted changes? commit, or use --force to discard them)"; fi
+    echo "Removed worktree $wt"
+  else
+    git -C "$APP_DIR" worktree prune
+    echo "No worktree at $wt (already removed)"
+  fi
+  if git -C "$APP_DIR" show-ref --verify -q "refs/heads/$branch"; then
+    if [ "$(git -C "$APP_DIR" branch --show-current)" = "$branch" ]; then echo "Branch $branch is checked out in the main checkout: kept."
+    elif git -C "$APP_DIR" branch -d "$branch" >/dev/null 2>&1; then echo "Deleted branch $branch"
+    elif [ -n "$(git -C "$APP_DIR" branch -r --contains "$branch" 2>/dev/null)" ] || [ "$force" = 1 ]; then
+      git -C "$APP_DIR" branch -D "$branch" >/dev/null 2>&1 && echo "Deleted branch $branch (its commits are on origin, or --force)"
+    else echo "Branch $branch kept: it has commits that are not on origin. Push it, or run: workbench done $app $branch --force"; fi
+  fi
+  cat <<EOT
+
+Close out, straight away:
+  - Resolve the left-undone items this change covered; add the builder's "Not done" and "Couldn't run" lines as items.
+  - Stop the builder's worker if it is still running (a worker with a CI watcher keeps sending notifications).
+  - Stop any local database stack or container the work started, and delete throwaway volumes.
+  - Update notes/STATE.md.
+At the end of a block of work, nothing should be running that no PR needs.
+EOT
+}
+
+# ---- status ----
+cmd_status() { local root; root=$(need_root) || exit 1; wb_status "$root"; }
+
+# ---- doctor ----
+D_FAIL=0; D_SKIP=" "
+d_pass() { echo "PASS $*"; }
+d_fail() { echo "FAIL $*"; D_FAIL=$((D_FAIL + 1)); }
+d_warn() { echo "WARN $*"; }
+d_skip() { echo "SKIP $*"; }
+skipped() { case "$D_SKIP" in *" $1 "*) return 0 ;; esac; return 1; }
+settings_files() { # settings files to check
+  local d
+  if [ ${#CONFIG_DIRS[@]} -gt 0 ]; then for d in "${CONFIG_DIRS[@]}"; do printf '%s\n' "$d/settings.json"; done
+  else printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"; fi
+}
+doctor_global() {
+  local deep=$1 f h
+  for h in jq git; do command -v "$h" >/dev/null 2>&1 && d_pass "$h found" || d_fail "$h not found (install it)"; done
+  if command -v gh >/dev/null 2>&1; then gh auth status >/dev/null 2>&1 && d_pass "gh signed in" || d_warn "gh is installed but not signed in (gh auth login)"
+  else d_warn "gh not installed (PR features need it)"; fi
+  for h in session-start guard-git guard-release; do
+    [ -x "$KIT/hooks/$h.sh" ] && d_pass "hook script $h.sh is executable" || d_fail "hook script $KIT/hooks/$h.sh is missing or not executable"
+  done
+  while IFS= read -r f; do
+    if [ ! -f "$f" ]; then d_fail "$f does not exist: global hooks are not wired (run install.sh)"; continue; fi
+    if ! jq -e . "$f" >/dev/null 2>&1; then d_fail "$f is not valid JSON"; continue; fi
+    for h in session-start guard-git guard-release; do
+      if jq -e --arg h "/kit/hooks/$h.sh" '[.hooks[]?[]?.hooks[]?.command // empty | select(contains($h))] | length > 0' "$f" >/dev/null 2>&1
+      then d_pass "$h wired in $f"; else d_fail "$h is not wired in $f (run install.sh)"; fi
+    done
+  done < <(settings_files)
+  if skipped worker; then d_skip "claude-worker check skipped"
+  else command -v claude-worker >/dev/null 2>&1 && d_pass "claude-worker on PATH" || d_fail "claude-worker is not on PATH (run install.sh; check ~/.local/bin is on PATH)"; fi
+  if skipped plugin; then d_skip "plugin check skipped"
+  elif ! command -v claude >/dev/null 2>&1; then d_fail "claude not found: cannot check the workbench plugin"
+  else
+    local pl; pl=$(wb_timeout 30 claude plugin list 2>/dev/null)
+    case "$pl" in *workbench@workbench*) d_pass "plugin workbench@workbench installed" ;; *) d_fail "plugin workbench@workbench is not installed (run install.sh)" ;; esac
+  fi
+  if [ "$deep" = 1 ]; then
+    for h in test-guard-git test-guard-release test-session-start; do
+      [ -f "$KIT/hooks/$h.sh" ] || continue
+      if /bin/bash "$KIT/hooks/$h.sh" >/dev/null 2>&1; then d_pass "$h.sh passes"; else d_fail "$h.sh fails (run it to see why)"; fi
+    done
+  fi
+}
+doctor_workspace() {
+  local root=$1 wj="$1/workbench.json" f m d
+  d_pass "workspace at $root"
+  jq -e '.workbench == 1 and (.name|type=="string") and (.apps|type=="array")' "$wj" >/dev/null 2>&1 && d_pass "workbench.json valid" || d_fail "workbench.json is not valid (needs workbench:1, name, apps[])"
+  for f in CLAUDE.md AGENTS.md; do
+    if [ ! -f "$root/$f" ]; then d_fail "$f missing"
+    elif grep -q '{{' "$root/$f"; then d_fail "$f has unreplaced {{ variables"
+    else d_pass "$f present, no unreplaced variables"; fi
+  done
+  for f in .claude/settings.json .codex/hooks.json notes/specs/rulings.json; do
+    [ -f "$root/$f" ] || { d_fail "$f missing"; continue; }
+    jq -e . "$root/$f" >/dev/null 2>&1 && d_pass "$f valid JSON" || d_fail "$f is not valid JSON"
+  done
+  jq -e --arg m "$root/.claude/memory" '.autoMemoryDirectory == $m' "$root/.claude/settings.json" >/dev/null 2>&1 \
+    && d_pass "autoMemoryDirectory points at this workspace" || d_fail ".claude/settings.json autoMemoryDirectory is not $root/.claude/memory"
+  [ -f "$root/.claude/memory/MEMORY.md" ] && d_pass "memory index present" || d_fail ".claude/memory/MEMORY.md missing"
+  for f in .claude/agents/builder.md .claude/agents/critic.md .claude/skills/left-undone-review/SKILL.md .agents/skills/left-undone-review/SKILL.md .codex/agents/builder.toml; do
+    [ -f "$root/$f" ] && d_pass "$f present" || d_fail "$f missing"
+  done
+  for f in apps ops worktrees stacks data notes mods; do [ -d "$root/$f" ] && d_pass "$f/ present" || d_fail "$f/ missing"; done
+  m=$(wb_mode "$root/data"); [ "$m" = 700 ] && d_pass "data/ mode 700" || d_fail "data/ mode is ${m:-unknown}, expected 700 (chmod 700 data)"
+  if [ -f "$root/.codex/hooks.json" ]; then
+    local c; c=$(jq -r '.. | .command? // empty' "$root/.codex/hooks.json" 2>/dev/null | sed "s/^'//; s/'\$//; s/^\"//; s/\"\$//")
+    local missing=0
+    while IFS= read -r c; do [ -z "$c" ] && continue; [ -x "$c" ] || { d_fail ".codex/hooks.json points at $c, which is missing or not executable"; missing=1; }; done <<< "$c"
+    [ "$missing" = 0 ] && d_pass ".codex/hooks.json hook scripts exist"
+  fi
+  local name repo integ branch
+  while IFS=$'\037' read -r name integ; do
+    [ -z "$name" ] && continue
+    d="$root/apps/$name"
+    if [ ! -d "$d/.git" ] && [ ! -f "$d/.git" ]; then d_fail "app $name: no checkout at apps/$name"; continue; fi
+    branch=$(git -C "$d" branch --show-current 2>/dev/null)
+    [ "$branch" = "$integ" ] && d_pass "app $name: main checkout on $integ" || d_fail "app $name: main checkout is on '${branch:-detached}', expected $integ (git -C apps/$name checkout $integ)"
+    jq -e --arg m "$root/.claude/memory" '.autoMemoryDirectory == $m' "$d/.claude/settings.local.json" >/dev/null 2>&1 \
+      && d_pass "app $name: settings.local.json has autoMemoryDirectory" || d_fail "app $name: .claude/settings.local.json lacks autoMemoryDirectory"
+  done < <(jq -r '.apps[]? | [.name, (.integration // .production // "main")] | join("\u001f")' "$wj" 2>/dev/null)
+}
+cmd_doctor() {
+  need_jq
+  local dir="" deep=0 glob=0
+  CONFIG_DIRS=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --deep) deep=1; shift ;;
+      --global) glob=1; shift ;;
+      --no-plugin) D_SKIP="$D_SKIP""plugin "; shift ;;
+      --skip) [ $# -ge 2 ] || die "--skip needs plugin or worker"; D_SKIP="$D_SKIP$2 "; shift 2 ;;
+      --config-dir) [ $# -ge 2 ] || die "--config-dir needs a folder"; CONFIG_DIRS+=("${2%/}"); shift 2 ;;
+      -h|--help) echo "usage: workbench doctor [dir] [--deep] [--global] [--no-plugin] [--skip plugin|worker] [--config-dir D]..."; return 0 ;;
+      -*) die "doctor: unknown option $1" ;;
+      *) dir=$1; shift ;;
+    esac
+  done
+  [ -n "$dir" ] || dir=$PWD
+  local p r=""; p=$(wb_physical "$dir"); [ -n "$p" ] || die "no such folder: $dir"
+  [ "$glob" = 1 ] || r=$(wb_find_root "$p")
+  if [ -n "$r" ]; then doctor_workspace "$r"; elif [ "$glob" = 0 ]; then d_skip "workspace checks: $p is not inside a workspace"; fi
+  doctor_global "$deep"
+  [ "$D_FAIL" = 0 ] && { echo "All checks passed."; return 0; }
+  echo "$D_FAIL check(s) failed."; return 1
+}
+
+cmd_help() {
+  cat <<EOT
+workbench $WB_VERSION: a Claude Code workspace with an orchestrator, builders in worktrees, guard hooks and shared memory.
+
+  workbench init [dir] [--name N] [--owner O] [--force]   scaffold a workspace in an empty folder
+  workbench add-app <owner/repo|git-url> [--name N]       clone an app into apps/ and register it
+  workbench worktree <app> <branch>                       new worktree from origin/<integration>; prints its path
+  workbench done <app> <branch> [--force]                 remove the worktree and branch, print the close-out list
+  workbench status                                        fetch apps, show PRs and what needs attention
+  workbench doctor [dir] [--deep] [--global] [--no-plugin] [--config-dir D]   check workspace and install; exit 1 on a FAIL
+  workbench version | help
+
+Private config: \${WORKBENCH_CONFIG:-~/.config/workbench/config.json}. Auto-init off: WORKBENCH_AUTO=0 or "autoInit": false.
+EOT
+}
+
+main() {
+  local c=${1:-help}; [ $# -gt 0 ] && shift
+  case "$c" in
+    init) cmd_init "$@" ;;
+    add-app) cmd_add_app "$@" ;;
+    worktree) cmd_worktree "$@" ;;
+    done) cmd_done "$@" ;;
+    status) cmd_status "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    version|--version|-v) echo "workbench $WB_VERSION" ;;
+    help|--help|-h) cmd_help ;;
+    *) echo "workbench: unknown command '$c'" >&2; cmd_help >&2; return 2 ;;
+  esac
+}
+main "$@"

@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"0b1f3c1e-6c63-4e55-9a39-1d2f0f7a9a10","model":"claude-sonnet-5-5","cwd":"/work"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day","resetsAt":1794808800,"overageStatus":"rejected","overageDisabledReason":"out_of_credits","isUsingOverage":false},"session_id":"0b1f3c1e-6c63-4e55-9a39-1d2f0f7a9a10"}
+{"type":"assistant","message":{"model":"<synthetic>","id":"msg_synthetic","type":"message","role":"assistant","content":[{"type":"text","text":"You've hit your weekly limit · resets Nov 12 at 4pm (Australia/Sydney)"}]},"session_id":"0b1f3c1e-6c63-4e55-9a39-1d2f0f7a9a10"}
+{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"api_error":"usage_limit_reached","result":"You've hit your weekly limit · resets Nov 12 at 4pm (Australia/Sydney)","session_id":"0b1f3c1e-6c63-4e55-9a39-1d2f0f7a9a10","total_cost_usd":0}

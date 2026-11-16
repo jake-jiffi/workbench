@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+'use strict';
+// Entry point. The code lives in ../worker/. This file is usually reached through a link (~/.local/bin), so resolve it first.
+require(require('path').join(require('fs').realpathSync(__dirname), '..', 'worker', 'cli.js'));

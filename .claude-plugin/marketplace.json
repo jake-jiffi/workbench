@@ -1,0 +1,14 @@
+{
+  "name": "workbench",
+  "owner": {
+    "name": "workbench"
+  },
+  "description": "Workbench: a kit that turns an empty folder into a Claude Code workspace run by one orchestrator session.",
+  "plugins": [
+    {
+      "name": "workbench",
+      "source": "./plugin",
+      "description": "Control pane for a workbench workspace: workers, PRs, what waits on the owner, left undone, context, accounts and handover."
+    }
+  ]
+}

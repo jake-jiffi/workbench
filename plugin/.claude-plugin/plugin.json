@@ -1,0 +1,108 @@
+{
+  "name": "workbench",
+  "version": "1.0.0",
+  "description": "Workbench control pane for an orchestrator session: workers, PRs and CI, what waits on the owner, what Claude left undone, context, cache, accounts and handover. Active only inside a workbench workspace.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open the pane at startup",
+      "description": "Open the Workbench pane when a session starts in a workspace (it docks beside the chat in a wide terminal).",
+      "default": true
+    },
+    "warnPercent": {
+      "type": "number",
+      "title": "Context warning at (%)",
+      "description": "Amber warning, one toast, and the /clear and /compact buttons when the context is this full.",
+      "default": 60
+    },
+    "urgentPercent": {
+      "type": "number",
+      "title": "Context urgent at (%)",
+      "description": "Red alert card above the others at this fill.",
+      "default": 80
+    },
+    "cacheTtl": {
+      "type": "string",
+      "title": "Prompt cache lifetime",
+      "description": "How long a cached prompt stays warm. Plans that use the 1 hour cache: pick 1h. An API key on the default cache: pick 5m. The reply data doesn't say which, so it is set here, never guessed.",
+      "options": [
+        "5m",
+        "1h"
+      ],
+      "default": "1h"
+    },
+    "undoneRetentionDays": {
+      "type": "number",
+      "title": "Left undone: stale after (days)",
+      "description": "Open left-undone items older than this are tagged stale, and a dropped item's words stay blocked this long. Nothing is deleted for age.",
+      "default": 14
+    },
+    "finishSends": {
+      "type": "boolean",
+      "title": "Finish sends straight away",
+      "description": "Left undone: 'finish all' sends the request at once instead of filling the prompt box for you to read first.",
+      "default": false
+    },
+    "accounts": {
+      "type": "string",
+      "title": "Known accounts (label=folder)",
+      "description": "Claude config folders to read usage from, as label=folder separated by commas, e.g. main=~/.claude, work=~/.claude/accounts/work. The mod learns each one's email from the claude binary; it never opens a login file and keys accounts on email, not the label.",
+      "default": "main=~/.claude"
+    },
+    "accountNotes": {
+      "type": "string",
+      "title": "Account notes (label=note)",
+      "description": "Shown for an account until a usage reading replaces it, e.g. work=out of credits 4 Nov.",
+      "default": ""
+    },
+    "usageProbeMinutes": {
+      "type": "number",
+      "title": "Read other accounts every (minutes)",
+      "description": "How often the claude binary is asked for another account's usage (no model call). Only while the pane is on screen or a warning is live.",
+      "default": 15
+    },
+    "usageWarnPercent": {
+      "type": "number",
+      "title": "Account warning at (%)",
+      "description": "Amber at this fill of the 5-hour window.",
+      "default": 80
+    },
+    "weekWarnPercent": {
+      "type": "number",
+      "title": "Week warning at (%)",
+      "description": "Amber toast at this fill of the weekly window.",
+      "default": 90
+    },
+    "usageUrgentPercent": {
+      "type": "number",
+      "title": "Account urgent at (%)",
+      "description": "Red at this fill of either window.",
+      "default": 95
+    },
+    "autoMovePct": {
+      "type": "number",
+      "title": "Automatic move at (%)",
+      "description": "When this session's account reaches this fill on the 5-hour or weekly meter and nothing is at risk, the conversation moves to another account on its own. 0 turns it off. Values between 1 and 49 count as 50.",
+      "default": 94
+    },
+    "briefFiles": {
+      "type": "string",
+      "title": "Handover brief: files to read first",
+      "description": "Relative paths the brief points to (pointers, never contents), separated by commas. Nothing under data/, no env files.",
+      "default": "notes/STATE.md, CLAUDE.md, .claude/memory/MEMORY.md"
+    },
+    "handoverClear": {
+      "type": "boolean",
+      "title": "Handover runs /clear itself",
+      "description": "Off: a queued handover puts /clear in the prompt box for you to press Enter on, then the brief. On: the clear runs when the turn ends. Running a command this way is unverified in a live session, so it stays off until you turn it on.",
+      "default": false
+    },
+    "connectorProbe": {
+      "type": "string",
+      "title": "Connector check after a swap (server|tool)",
+      "description": "One harmless read-only call to check a claude.ai connector survived a swap, as server|tool. Empty: off.",
+      "default": ""
+    }
+  }
+}

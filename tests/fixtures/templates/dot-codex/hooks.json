@@ -1,0 +1,1 @@
+{"hooks":{"SessionStart":[{"matcher":"startup|clear","hooks":[{"type":"command","command":"'{{WORKBENCH_HOME}}/kit/hooks/session-start.sh'","timeout":30}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"'{{WORKBENCH_HOME}}/kit/hooks/guard-git.sh'","timeout":10},{"type":"command","command":"'{{WORKBENCH_HOME}}/kit/hooks/guard-release.sh'","timeout":15}]}]}}
