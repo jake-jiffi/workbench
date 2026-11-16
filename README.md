@@ -6,7 +6,7 @@
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-f5b14c?style=flat-square"></a>
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-7ad9b8?style=flat-square">
   <img alt="Works with Codex" src="https://img.shields.io/badge/Codex-AGENTS.md-8a93ad?style=flat-square">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-{{TOTAL}}%20passing-7ad9b8?style=flat-square">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-840%20passing-7ad9b8?style=flat-square">
   <img alt="macOS and Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux-bash%203.2%2B-8a93ad?style=flat-square">
 </p>
 
@@ -83,6 +83,10 @@ flowchart LR
 - **Shared memory.** Every app in the workspace reads and writes one `.claude/memory`, seeded with six rules that keep the crew cheap and honest: one orchestrator, save tokens, push once, run unwatched until a gate, one ask that works the first time, and left undone gates shipping.
 
 ## The pane
+
+<p align="center"><img src="docs/images/pane.jpg" alt="A floating glass panel of stacked status cards beside a terminal" width="88%"></p>
+
+The same demo a minute later, with work in flight:
 
 <p align="center"><img src="docs/images/capture-pane.png" alt="The workbench pane with two items waiting on the owner, three left-undone items, a running worker and three commits ready to release" width="100%"></p>
 
@@ -167,7 +171,22 @@ Every workspace carries `AGENTS.md`, `.codex/agents/` (builder and critic) and `
 
 ## Tested
 
-{{TESTED}}
+840 automated checks, all passing on macOS with the stock bash 3.2 and Node 22:
+
+| Suite | Checks |
+|---|---|
+| `guard-git` hook | 173 |
+| `guard-release` hook | 57 |
+| `session-start` hook: auto-setup eligibility, two sessions racing for one folder, the brief | 84 |
+| `install.sh`: idempotent, round-trips, never touches anything outside the folders it's given | 49 |
+| `workbench` CLI | 22 |
+| End to end: empty folder to verified workspace | 73 |
+| The pane (`claude plugin test`) | 268 |
+| `claude-worker` | 114 |
+
+And in real Claude Code sessions: started in an empty folder, the session set the workspace up, recorded and resolved left-undone items across sessions, added an app from a git remote, made and closed a worktree, and had a Sonnet builder subagent ship a change in its own worktree. `claude-worker` finished a job on a second account. The guards refused a push to `main`, a commit in `apps/` and a deploy without a review. An independent critic then attacked the hooks; every bypass it found is fixed and now in the suites.
+
+Run the hook suites yourself with `workbench doctor --deep`.
 
 ## Update and uninstall
 

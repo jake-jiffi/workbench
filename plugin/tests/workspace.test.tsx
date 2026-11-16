@@ -232,9 +232,11 @@ const CASES: Array<[string, { cwd: string; list?: Array<{ name: string }>; files
   ...['Desktop', 'Documents', 'Downloads', 'Movies', 'Music', 'Pictures', 'Public', 'Library', 'Applications', 'Sites', 'Dropbox', 'OneDrive', 'Google Drive', 'iCloud Drive', 'snap'].map(
     (f): [string, { cwd: string; list: Array<{ name: string }>; files: Record<string, string> }, number] => [`the user folder ${f} itself`, { cwd: `/Users/test/${f}`, list: [], files: AUTO }, 0]),
   ['a subfolder of Documents stays eligible', { cwd: '/Users/test/Documents/new-project', list: [], files: AUTO }, 5],
+  ['mid-build: the stage folder of the hook and some moved files', { cwd: '/work/new', list: [{ name: '.workbench-stage.Ab12Cd' }, { name: 'apps' }, { name: 'CLAUDE.md' }], files: AUTO }, 5],
+  ['files but no stage folder and no marker', { cwd: '/work/new', list: [{ name: 'apps' }, { name: 'CLAUDE.md' }], files: AUTO }, 0],
   ['a subfolder of Dropbox stays eligible', { cwd: '/Users/test/Dropbox/new-project', list: [], files: AUTO }, 5],
   ['inside a git work tree', { cwd: '/work/new', list: [], files: AUTO, git: 'inside' }, 0],
-  ['git cannot run', { cwd: '/work/new', list: [], files: AUTO, git: 'cannot-run' }, 0],
+  ['git cannot run (the hook inits it, so the tools are there)', { cwd: '/work/new', list: [], files: AUTO, git: 'cannot-run' }, 5],
   ['under /var/tmp', { cwd: '/var/tmp/x', list: [], files: AUTO }, 0],
   ['under /private/var/tmp', { cwd: '/private/var/tmp/x', list: [], files: AUTO }, 0],
   ['under /dev/shm', { cwd: '/dev/shm/x', list: [], files: AUTO }, 0],

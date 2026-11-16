@@ -120,14 +120,18 @@ export async function isEligibleEmpty($: EngineInterface, dir: string | undefine
     if (rel.split('/').some(seg => seg.startsWith('.'))) return false
   }
   const entries = await $.fs.list(path).catch(() => undefined)
-  if (!entries || !entries.every(e => e.name === '.DS_Store')) return false
+  if (!entries) return false
+  // The session-start hook may be building the workspace right now: it stages in .workbench-stage.* and then moves the
+  // files in, so a folder holding a stage folder counts as the empty folder it was a moment ago.
+  const isBuilding = entries.some(e => e.name.startsWith('.workbench-stage.'))
+  if (!isBuilding && !entries.every(e => e.name === '.DS_Store')) return false
   try {
     const ran = await $.process.run(['git', '-C', path, 'rev-parse', '--is-inside-work-tree'], { cwd: '/' })
-    if (ran.stdout.trim() === 'true') return false
-    // Outside a repository git says so; any other failure (not installed, not runnable) is "cannot tell", so not eligible.
-    return ran.exitCode === 0 || /not a git repository/i.test(ran.stderr)
+    // Only a definite "inside a work tree" refuses. A git that can't run is no refusal: the session-start hook
+    // inits the folder in that case too, so the tools must be there for it.
+    return ran.stdout.trim() !== 'true'
   } catch {
-    return false
+    return true
   }
 }
 
