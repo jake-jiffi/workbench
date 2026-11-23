@@ -158,6 +158,49 @@ ok "$([ "$(cd "$d" && find . -type f | sort | tr '\n' ' ')" = "$(cd "$ref" && fi
 ok "$(jq -e . "$d/workbench.json" >/dev/null && ! ls -A "$d" | grep -q workbench-stage && ! ls "$B/tmp" | grep -q 'workbench-init'; echo $?)" "valid marker, no stage folder, no lock left"
 ok "$(grep -c . "$d/CLAUDE.md" | grep -qx "$(grep -c . "$ref/CLAUDE.md")"; echo $?)" "CLAUDE.md not duplicated"
 
+# --- an existing project under a project root gets a brief to set up a workspace beside it; the hook writes nothing ---
+export GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@example.com
+ctx() { printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null; }
+quiet_on() { # quiet_on <name> <source> <cwd> [env...]: exit 0, no output, nothing written
+  local name=$1 src=$2 cwd=$3; shift 3
+  local before; before=$(find "$cwd" -maxdepth 2 2>/dev/null | sort | md5)
+  OUT=$(jq -n --arg s "$src" --arg c "$cwd" '{source:$s,cwd:$c}' | env "$@" "$HOOK" 2>/dev/null); RC=$?
+  ok "$([ $RC = 0 ] && [ -z "$OUT" ] && [ "$before" = "$(find "$cwd" -maxdepth 2 2>/dev/null | sort | md5)" ]; echo $?)" "$name: silent, nothing written"
+}
+A="$B/adopt"; mkdir -p "$A" "$H/dev" "$H/Documents" "$H/elsewhere"
+git init -q --bare -b main "$A/proj.git"
+mkrepo() { git clone -q "$A/proj.git" "$1" 2>/dev/null; echo hi > "$1/README.md"; git -C "$1" add -A; git -C "$1" commit -qm one >/dev/null 2>&1; git -C "$1" push -q origin main 2>/dev/null; }
+mkrepo "$H/dev/proj"; echo wip > "$H/dev/proj/wip.txt"; mkdir -p "$H/dev/proj/src"
+hook startup "$H/dev/proj"; c=$(ctx)
+ok "$([ $RC = 0 ] && printf '%s' "$c" | grep -qF "workbench init \"$H/dev/workspaces/proj\"" && printf '%s' "$c" | grep -q 'workbench add-app .*proj.git --name proj' && printf '%s' "$c" | grep -q '1 uncommitted'; echo $?)" "existing repo in ~/dev: brief names the workspace, add-app and the uncommitted file"
+ok "$([ ! -e "$H/dev/workspaces" ] && [ "$(git -C "$H/dev/proj" status --porcelain | wc -l | tr -d ' ')" = 1 ]; echo $?)" "the hook itself created nothing and left the repo as it was"
+ok "$(printf '%s' "$c" | grep -q 'Sam'; echo $?)" "the brief names the owner from the config"
+hook startup "$H/dev/proj/src"; ok "$(ctx | grep -qF "$H/dev/workspaces/proj"; echo $?)" "a subfolder of the repo briefs for the repo"
+# follow the brief, then the same project points at its workspace
+"$KIT/bin/workbench" init "$H/dev/workspaces/proj" --quiet >/dev/null 2>&1 && ( cd "$H/dev/workspaces/proj" && "$KIT/bin/workbench" add-app "$A/proj.git" --name proj >/dev/null 2>&1 )
+hook startup "$H/dev/proj"; ok "$(ctx | grep -qF "already has a workspace at $H/dev/workspaces/proj"; echo $?)" "after setup: one line pointing at the workspace"
+quiet_on "the workspaces folder itself" startup "$H/dev/workspaces"
+mkdir -p "$H/dev/plain"; echo notes > "$H/dev/plain/notes.md"
+hook startup "$H/dev/plain"; ok "$(ctx | grep -qF "workbench init \"$H/dev/plain\" --force"; echo $?)" "folder with files, no git: init --force in place"
+echo mine > "$H/dev/plain/CLAUDE.md"; hook startup "$H/dev/plain"; ok "$(ctx | grep -q 'already has a CLAUDE.md'; echo $?)" "its own CLAUDE.md is called out"
+mkdir -p "$H/dev/local"; git -C "$H/dev/local" init -q; echo x > "$H/dev/local/a"
+hook startup "$H/dev/local"; ok "$(ctx | grep -q 'no origin remote' && ! ctx | grep -q 'workbench init'; echo $?)" "repo with no origin: ask first, set nothing up"
+printf '%s\n' "$H/dev/local" > "$H/adopt-skip"; quiet_on "a path in adopt-skip" startup "$H/dev/local"
+mkrepo "$H/Documents/repo"; quiet_on "a repo in Documents (not a project root)" startup "$H/Documents/repo"
+mkrepo "$H/elsewhere/repo"; quiet_on "a repo outside the project roots" startup "$H/elsewhere/repo"
+quiet_on "home folder" startup "$H"
+quiet_on "source clear" clear "$H/dev/plain"
+quiet_on "source resume" resume "$H/dev/plain"
+quiet_on "WORKBENCH_AUTO=0" startup "$H/dev/plain" WORKBENCH_AUTO=0
+quiet_on "a scripted run (sdk entrypoint)" startup "$H/dev/plain" CLAUDE_CODE_ENTRYPOINT=sdk-cli
+echo '{"owner":"Sam","autoInit":true,"adoptExisting":false}' > "$WORKBENCH_CONFIG"; quiet_on '"adoptExisting": false' startup "$H/dev/plain"
+echo '{"owner":"Sam","autoInit":true,"projectRoots":[]}' > "$WORKBENCH_CONFIG"; quiet_on '"projectRoots": []' startup "$H/dev/plain"
+echo '{"owner":"Sam","autoInit":false}' > "$WORKBENCH_CONFIG"; quiet_on '"autoInit": false' startup "$H/dev/plain"
+echo '{"owner":"Sam","autoInit":true,"projectRoots":["~/elsewhere"]}' > "$WORKBENCH_CONFIG"
+hook startup "$H/elsewhere/repo"; ok "$(ctx | grep -qF "workbench init \"$H/elsewhere/workspaces/repo\""; echo $?)" "projectRoots in the config is honoured, workspaces beside them"
+echo '{"owner":"Sam","autoInit":true}' > "$WORKBENCH_CONFIG"
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+
 # --- every start hands the daily update to the background; the session never waits for it ---
 export GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@example.com
 U="$B/upd"; mkdir -p "$U"; git init -q --bare -b main "$U/origin.git"

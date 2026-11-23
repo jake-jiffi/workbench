@@ -6,7 +6,7 @@
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-f5b14c?style=flat-square"></a>
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-7ad9b8?style=flat-square">
   <img alt="Works with Codex" src="https://img.shields.io/badge/Codex-AGENTS.md-8a93ad?style=flat-square">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-860%20passing-7ad9b8?style=flat-square">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-881%20passing-7ad9b8?style=flat-square">
   <img alt="macOS and Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux-bash%203.2%2B-8a93ad?style=flat-square">
 </p>
 
@@ -58,6 +58,23 @@ Add your repos and go:
 ```bash
 workbench add-app acme/web-app      # clones into apps/, picks staging or main, shares the workspace memory
 ```
+
+## What happens in an existing project
+
+Start Claude in a project that sits directly inside a project root (`~/dev` by default) and has no workspace yet. Before anything else, workbench briefs Claude to set one up beside it:
+
+```
+~/dev/my-app/              your folder, left exactly as it is
+~/dev/workspaces/my-app/   the new workspace, with my-app cloned into apps/ from its remote
+```
+
+Claude tells you how many uncommitted files and unpushed commits the original folder has, because the new checkout only has what is on the remote. Then quit and start Claude in the workspace, where the orchestrator, its memory and the guards load. Open the original folder again later and Claude points you at the workspace.
+
+- A repo with no remote: Claude asks whether to put it on GitHub first, and sets nothing up.
+- A folder with files and no git: it becomes the workspace in place, with `workbench init --force`, which never overwrites a file.
+- To leave one project out, add its path as a line to `~/.config/workbench/adopt-skip`.
+
+The hook only writes the brief. Claude runs the commands, so you see each one.
 
 ## How it works
 
@@ -155,15 +172,16 @@ Every worker gets the guard hooks, an allow-listed environment (no secrets, noth
   "owner": "Sam",
   "autoInit": true,
   "autoUpdate": true,
+  "projectRoots": ["~/dev"],
   "accounts": [ { "label": "main", "dir": "~/.claude" } ],
   "protectedBranches": ["main", "staging"],
   "models": { "orchestrator": "opus", "builder": "sonnet" }
 }
 ```
 
-Each workspace's `workbench.json` holds its apps, protected branches, ship patterns and models. Turn auto-setup off with `"autoInit": false`, or for one session with `WORKBENCH_AUTO=0 claude`. Turn auto-update off with `"autoUpdate": false`, or `WORKBENCH_AUTOUPDATE=0`.
+Each workspace's `workbench.json` holds its apps, protected branches, ship patterns and models. Turn auto-setup off with `"autoInit": false`, or for one session with `WORKBENCH_AUTO=0 claude`. Turn auto-update off with `"autoUpdate": false`, or `WORKBENCH_AUTOUPDATE=0`. `"projectRoots"` lists the folders whose projects get a workspace, `["~/dev"]` when it's missing. Turn that off with `"adoptExisting": false` or `"projectRoots": []`.
 
-Auto-setup only touches a folder that is completely empty (a `.DS_Store` is fine). It never touches your home folder, `/`, temp folders, hidden folders, the standard folders in your home (Desktop, Documents, Downloads and the rest), anything inside a git repo, or anything already inside a workspace.
+Auto-setup only creates files in a folder that is completely empty (a `.DS_Store` is fine). In an existing project it only briefs Claude. It never touches your home folder, `/`, temp folders, hidden folders, the standard folders in your home (Desktop, Documents, Downloads and the rest), anything inside a git repo, or anything already inside a workspace.
 
 More than one Claude config folder (several accounts)? Wire each one: `install.sh --config-dir ~/.claude-work`.
 
@@ -173,13 +191,13 @@ Every workspace carries `AGENTS.md`, `.codex/agents/` (builder and critic) and `
 
 ## Tested
 
-860 automated checks, all passing on macOS with the stock bash 3.2 and Node 22:
+881 automated checks, all passing on macOS with the stock bash 3.2 and Node 22:
 
 | Suite | Checks |
 |---|---|
 | `guard-git` hook | 173 |
 | `guard-release` hook | 57 |
-| `session-start` hook: auto-setup eligibility, two sessions racing for one folder, the brief, the background update | 87 |
+| `session-start` hook: auto-setup eligibility, two sessions racing for one folder, the brief, existing projects, the background update | 108 |
 | `install.sh`: idempotent, round-trips, never touches anything outside the folders it's given | 49 |
 | `workbench` CLI, including `update` | 39 |
 | End to end: empty folder to verified workspace | 73 |
