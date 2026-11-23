@@ -19,6 +19,7 @@ S
 chmod +x "$B/stub/claude"
 export HOME="$H" TMPDIR="$B/tmp" WORKBENCH_HOME="$B/wbhome" WORKBENCH_CONFIG="$H/cfg.json" \
        WORKBENCH_TEMPLATES="$REPO/tests/fixtures/templates" PATH="$B/stub:$PATH"
+export WORKBENCH_AUTOUPDATE=0
 unset WORKBENCH_AUTO CLAUDE_CONFIG_DIR RACE_FILE
 echo '{"owner":"Sam","autoInit":true}' > "$WORKBENCH_CONFIG"
 HOOK="$here/session-start.sh"
@@ -156,5 +157,20 @@ ref="$B/f/ref"; empty_dir "$ref"; hook startup "$ref"
 ok "$([ "$(cd "$d" && find . -type f | sort | tr '\n' ' ')" = "$(cd "$ref" && find . -type f | sort | tr '\n' ' ')" ]; echo $?)" "file set identical to a single run: no half or double write"
 ok "$(jq -e . "$d/workbench.json" >/dev/null && ! ls -A "$d" | grep -q workbench-stage && ! ls "$B/tmp" | grep -q 'workbench-init'; echo $?)" "valid marker, no stage folder, no lock left"
 ok "$(grep -c . "$d/CLAUDE.md" | grep -qx "$(grep -c . "$ref/CLAUDE.md")"; echo $?)" "CLAUDE.md not duplicated"
+
+# --- every start hands the daily update to the background; the session never waits for it ---
+export GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@example.com
+U="$B/upd"; mkdir -p "$U"; git init -q --bare -b main "$U/origin.git"
+git clone -q "$U/origin.git" "$U/seed" 2>/dev/null; echo 1 > "$U/seed/f"; git -C "$U/seed" add f; git -C "$U/seed" commit -qm one; git -C "$U/seed" push -q origin main 2>/dev/null
+git clone -q "$U/origin.git" "$U/inst" 2>/dev/null
+echo 2 > "$U/seed/f"; git -C "$U/seed" commit -qam two; git -C "$U/seed" push -q origin main 2>/dev/null
+rm -f "$H/last-update"; d="$B/f/upd-off"; mkdir -p "$d"
+jq -n --arg c "$d" '{source:"startup",cwd:$c}' | WORKBENCH_HOME="$U/inst" WORKBENCH_AUTOUPDATE=0 "$HOOK" >/dev/null 2>&1; sleep 1
+ok "$([ ! -e "$H/last-update" ] && [ "$(cat "$U/inst/f")" = 1 ]; echo $?)" "WORKBENCH_AUTOUPDATE=0: no update runs"
+t0=$(date +%s); jq -n --arg c "$d" '{source:"startup",cwd:$c}' | WORKBENCH_HOME="$U/inst" WORKBENCH_AUTOUPDATE=1 "$HOOK" >/dev/null 2>&1; RC=$?; t1=$(date +%s)
+ok "$([ $RC = 0 ] && [ $((t1 - t0)) -le 2 ]; echo $?)" "the hook returns at once with the update in the background ($((t1 - t0))s)"
+w=0; while [ "$w" -lt 50 ] && [ "$(cat "$U/inst/f")" != 2 ]; do sleep 0.2; w=$((w + 1)); done
+ok "$([ "$(cat "$U/inst/f")" = 2 ] && grep -q 'updated' "$H/last-update"; echo $?)" "the background update fast-forwarded the install"
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
 echo "$fails failed of $n"; exit $fails

@@ -380,6 +380,10 @@ doctor_global() {
     local pl; pl=$(wb_timeout 30 claude plugin list 2>/dev/null)
     case "$pl" in *workbench@workbench*) d_pass "plugin workbench@workbench installed" ;; *) d_fail "plugin workbench@workbench is not installed (run install.sh)" ;; esac
   fi
+  local ul; ul=$(cat "$(update_log)" 2>/dev/null)
+  if [ "$(wb_cfg_get '.autoUpdate' true)" = false ] || [ "${WORKBENCH_AUTOUPDATE:-1}" = 0 ]; then d_warn "auto-update is off: run workbench update yourself"
+  elif [ -n "$ul" ]; then d_pass "auto-update on, last check: $ul"
+  else d_pass "auto-update on, first check runs with the next session"; fi
   if [ "$deep" = 1 ]; then
     for h in test-guard-git test-guard-release test-session-start; do
       [ -f "$KIT/hooks/$h.sh" ] || continue
@@ -450,6 +454,64 @@ cmd_doctor() {
   echo "$D_FAIL check(s) failed."; return 1
 }
 
+# ---- update ----
+# The install keeps itself current: a fast-forward of this clone to origin's default branch, and nothing else.
+# It never merges, rebases, stashes or discards. Local changes, another branch or local commits leave it alone.
+# --if-due is what the session-start hook runs in the background: at most once a day, silent, never failing.
+# Off: "autoUpdate": false in the private config, or WORKBENCH_AUTOUPDATE=0.
+update_log() { printf '%s/last-update' "$(dirname "$(wb_cfg_file)")"; }
+cmd_update() {
+  local due=0 quiet=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --if-due) due=1; shift ;;
+      --quiet) quiet=1; shift ;;
+      -h|--help) echo "usage: workbench update [--if-due] [--quiet]"; return 0 ;;
+      *) die "update: unknown option $1" ;;
+    esac
+  done
+  local wh log skip=1 gd lock def br old new msg
+  [ "$due" = 1 ] && skip=0
+  wh=$(wb_physical "${WORKBENCH_HOME:-$REPO}"); [ -n "$wh" ] || wh=$REPO
+  log=$(update_log)
+  if [ "$due" = 1 ]; then
+    [ "${WORKBENCH_AUTOUPDATE:-1}" = 0 ] && return 0
+    [ "$(wb_cfg_get '.autoUpdate' true)" = false ] && return 0
+    [ -n "$(find "$log" -mmin -1440 2>/dev/null)" ] && return 0
+  fi
+  gd=$(git -C "$wh" rev-parse --absolute-git-dir 2>/dev/null)
+  if [ -z "$gd" ] || [ "$(wb_physical "$(git -C "$wh" rev-parse --show-toplevel 2>/dev/null)")" != "$wh" ]; then
+    [ "$quiet" = 1 ] || note "$wh is not a git clone, so it can't update itself. Reinstall it with git clone."
+    return $skip
+  fi
+  lock="$gd/workbench-update.lock"
+  wb_lock "$lock" 0 || return 0                      # another update is running
+  trap 'wb_unlock "$lock"' EXIT
+  up_done() { # up_done <exit code> <message>: record the outcome, say it, release the lock
+    mkdir -p "$(dirname "$log")" 2>/dev/null && printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$2" > "$log" 2>/dev/null
+    if [ "$quiet" = 0 ]; then if [ "$1" = 0 ]; then echo "$2"; else note "$2"; fi; fi
+    wb_unlock "$lock"; trap - EXIT
+    return "$1"
+  }
+  def=$(git -C "$wh" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null); def=${def#origin/}; [ -n "$def" ] || def=main
+  br=$(git -C "$wh" branch --show-current 2>/dev/null)
+  [ "$br" = "$def" ] || { up_done $skip "workbench is on branch ${br:-(detached)}, not $def: left alone"; return; }
+  [ -z "$(git -C "$wh" status --porcelain --untracked-files=no 2>/dev/null)" ] \
+    || { up_done $skip "workbench has local changes in $wh: left alone"; return; }
+  wb_timeout 60 git -C "$wh" fetch --quiet origin "$def" >/dev/null 2>&1 \
+    || { up_done $skip "workbench could not reach origin: will try again tomorrow"; return; }
+  old=$(git -C "$wh" rev-parse HEAD); new=$(git -C "$wh" rev-parse -q --verify "refs/remotes/origin/$def")
+  [ -n "$new" ] || { up_done $skip "origin/$def not found: left alone"; return; }
+  [ "$old" = "$new" ] && { up_done 0 "workbench is up to date (${old:0:7})"; return; }
+  git -C "$wh" merge-base --is-ancestor "$old" "$new" 2>/dev/null \
+    || { up_done $skip "workbench has commits that are not on origin/$def: left alone"; return; }
+  msg=$(git -C "$wh" merge --ff-only --quiet "$new" 2>&1) \
+    || { up_done $skip "workbench could not fast-forward: $(printf '%s' "$msg" | head -n 1)"; return; }
+  msg="workbench updated ${old:0:7} to ${new:0:7}. New sessions load it; in an open one, run /reload-plugins."
+  git -C "$wh" diff --quiet "$old" "$new" -- install.sh 2>/dev/null || msg="$msg The installer changed too: run $wh/install.sh."
+  up_done 0 "$msg"
+}
+
 cmd_help() {
   cat <<EOT
 workbench $WB_VERSION: a Claude Code workspace with an orchestrator, builders in worktrees, guard hooks and shared memory.
@@ -460,9 +522,11 @@ workbench $WB_VERSION: a Claude Code workspace with an orchestrator, builders in
   workbench done <app> <branch> [--force]                 remove the worktree and branch, print the close-out list
   workbench status                                        fetch apps, show PRs and what needs attention
   workbench doctor [dir] [--deep] [--global] [--no-plugin] [--config-dir D]   check workspace and install; exit 1 on a FAIL
+  workbench update                                        fast-forward this install to GitHub (also runs by itself once a day)
   workbench version | help
 
 Private config: \${WORKBENCH_CONFIG:-~/.config/workbench/config.json}. Auto-init off: WORKBENCH_AUTO=0 or "autoInit": false.
+Auto-update off: WORKBENCH_AUTOUPDATE=0 or "autoUpdate": false.
 EOT
 }
 
@@ -475,6 +539,7 @@ main() {
     done) cmd_done "$@" ;;
     status) cmd_status "$@" ;;
     doctor) cmd_doctor "$@" ;;
+    update) cmd_update "$@" ;;
     version|--version|-v) echo "workbench $WB_VERSION" ;;
     help|--help|-h) cmd_help ;;
     *) echo "workbench: unknown command '$c'" >&2; cmd_help >&2; return 2 ;;

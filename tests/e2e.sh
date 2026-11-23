@@ -22,6 +22,7 @@ real_plugin=$(claude plugin list 2>/dev/null | grep -c 'workbench@workbench')
 # ---- environment: a fake home, everything else inherited ----
 export HOME="$E/home" WORKBENCH_CONFIG="$E/home/.config/workbench/config.json"
 unset CLAUDE_CONFIG_DIR WORKBENCH_HOME WORKBENCH_AUTO WORKBENCH_TEMPLATES GUARD_RELEASE_REVIEW
+export WORKBENCH_AUTOUPDATE=0
 mkdir -p "$HOME/.claude" "$E/remote"
 export PATH="$HOME/.local/bin:$PATH"
 git config --global user.email e2e@example.com 2>/dev/null; export GIT_CONFIG_GLOBAL="$HOME/.gitconfig"

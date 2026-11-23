@@ -7,6 +7,7 @@ fails=0; n=0
 ok() { n=$((n + 1)); if [ "$1" = 0 ]; then echo "ok   $2"; else echo "FAIL $2"; [ -n "$3" ] && printf '%s\n' "$3" | sed 's/^/       /'; fails=$((fails + 1)); fi; }
 export HOME="$B/home" WORKBENCH_CONFIG="$B/home/cfg.json" WORKBENCH_TEMPLATES="$REPO/tests/fixtures/templates"
 unset CLAUDE_CONFIG_DIR WORKBENCH_HOME
+export WORKBENCH_AUTOUPDATE=0
 mkdir -p "$HOME"; echo '{"owner":"Cfg"}' > "$WORKBENCH_CONFIG"
 mkdir -p "$B/stub"; printf '#!/bin/sh\nexit 0\n' > "$B/stub/claude"; chmod +x "$B/stub/claude"; export PATH="$B/stub:$PATH"
 
@@ -50,6 +51,39 @@ tf="$B/none"; mkdir "$tf"; WORKBENCH_TEMPLATES="$B/nope" "$WB" init "$tf" >/dev/
 # a half-made folder (no marker) is not a workspace: init --force completes it
 h="$B/half"; mkdir -p "$h/.claude"; echo mine > "$h/.claude/keep"; "$WB" init "$h" >/dev/null 2>&1; ok "$((1 - ($? != 0)))" "non-empty folder refused"
 "$WB" init "$h" --force >/dev/null 2>&1; ok "$([ -f "$h/workbench.json" ] && [ "$(cat "$h/.claude/keep")" = mine ]; echo $?)" "--force completes it and keeps the file"
+
+# update: fast-forwards a clean clone of origin's default branch; leaves anything else alone and says why
+export GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@example.com
+U="$B/upd"; mkdir -p "$U"; git init -q --bare -b main "$U/origin.git"
+git clone -q "$U/origin.git" "$U/seed" 2>/dev/null; echo 1 > "$U/seed/f"; echo i > "$U/seed/install.sh"
+git -C "$U/seed" add -A; git -C "$U/seed" commit -qm one; git -C "$U/seed" push -q origin main 2>/dev/null
+git clone -q "$U/origin.git" "$U/inst" 2>/dev/null
+push() { echo "$1" > "$U/seed/${2:-f}"; git -C "$U/seed" commit -qam "$1"; git -C "$U/seed" push -q origin main 2>/dev/null; }
+at_origin() { [ "$(git -C "$U/inst" rev-parse HEAD)" = "$(git -C "$U/origin.git" rev-parse main)" ]; }
+upd() { WORKBENCH_HOME="$U/inst" WORKBENCH_AUTOUPDATE=1 "$WB" update "$@"; }
+push 2; out=$(upd 2>&1); rc=$?
+ok "$([ $rc = 0 ] && at_origin && [ "$(cat "$U/inst/f")" = 2 ]; echo $?)" "update fast-forwards a clean clone" "$out"
+ok "$(printf '%s' "$out" | grep -q 'updated .* to '; echo $?)" "it says what changed"
+out=$(upd 2>&1); ok "$([ $? = 0 ] && printf '%s' "$out" | grep -q 'up to date'; echo $?)" "a second run: up to date" "$out"
+ok "$(grep -q 'up to date' "$HOME/last-update"; echo $?)" "the outcome is recorded next to the config"
+push 3; push 4 install.sh; out=$(upd 2>&1); ok "$([ $? = 0 ] && at_origin && printf '%s' "$out" | grep -q 'installer changed'; echo $?)" "a changed installer is called out" "$out"
+push 5; echo mine > "$U/inst/f"; out=$(upd 2>&1); rc=$?
+ok "$([ $rc = 1 ] && ! at_origin && [ "$(cat "$U/inst/f")" = mine ] && printf '%s' "$out" | grep -q 'local changes'; echo $?)" "local changes: left alone, kept, exit 1" "$out"
+rm -f "$HOME/last-update"; upd --if-due --quiet >/dev/null 2>&1; ok "$([ $? = 0 ] && [ "$(cat "$U/inst/f")" = mine ]; echo $?)" "--if-due with local changes: exit 0, still untouched"
+git -C "$U/inst" checkout -q -- f; rm -f "$HOME/last-update"
+git -C "$U/inst" checkout -q -b other; out=$(upd 2>&1); ok "$([ $? = 1 ] && ! at_origin && printf '%s' "$out" | grep -q 'branch other'; echo $?)" "another branch: left alone" "$out"
+git -C "$U/inst" checkout -q main; echo x > "$U/inst/g"; git -C "$U/inst" add g; git -C "$U/inst" commit -qm local
+out=$(upd 2>&1); ok "$([ $? = 1 ] && [ -f "$U/inst/g" ] && printf '%s' "$out" | grep -q 'not on origin'; echo $?)" "local commits: left alone" "$out"
+git -C "$U/inst" reset -q --hard origin/main~1; rm -f "$HOME/last-update"
+upd --if-due --quiet; ok "$([ $? = 0 ] && at_origin; echo $?)" "--if-due updates when no check has run today"
+push 6; upd --if-due --quiet; ok "$(! at_origin; echo $?)" "--if-due waits a day after the last check"
+rm -f "$HOME/last-update"; WORKBENCH_AUTOUPDATE=0 WORKBENCH_HOME="$U/inst" "$WB" update --if-due --quiet; ok "$(! at_origin; echo $?)" "WORKBENCH_AUTOUPDATE=0 turns --if-due off"
+echo '{"owner":"Cfg","autoUpdate":false}' > "$WORKBENCH_CONFIG"; upd --if-due --quiet; ok "$(! at_origin; echo $?)" '"autoUpdate": false turns --if-due off'
+echo '{"owner":"Cfg"}' > "$WORKBENCH_CONFIG"; upd --if-due --quiet; ok "$(at_origin; echo $?)" "no autoUpdate key means on"
+mkdir -p "$U/plain"; out=$(WORKBENCH_HOME="$U/plain" "$WB" update 2>&1); ok "$([ $? = 1 ] && printf '%s' "$out" | grep -q 'not a git clone'; echo $?)" "not a git clone: refused clearly" "$out"
+WORKBENCH_HOME="$U/plain" WORKBENCH_AUTOUPDATE=1 "$WB" update --if-due --quiet; ok $? "--if-due on a non-clone exits 0"
+mkdir -p "$U/inst/sub"; out=$(WORKBENCH_HOME="$U/inst/sub" "$WB" update 2>&1); ok "$([ $? = 1 ]; echo $?)" "a folder inside another clone is not treated as the install" "$out"
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
 # version, help, unknown
 ok "$([ "$("$WB" version)" = "workbench 1.0.0" ]; echo $?)" "version"

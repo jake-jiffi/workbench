@@ -6,7 +6,7 @@
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-f5b14c?style=flat-square"></a>
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-7ad9b8?style=flat-square">
   <img alt="Works with Codex" src="https://img.shields.io/badge/Codex-AGENTS.md-8a93ad?style=flat-square">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-840%20passing-7ad9b8?style=flat-square">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-860%20passing-7ad9b8?style=flat-square">
   <img alt="macOS and Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux-bash%203.2%2B-8a93ad?style=flat-square">
 </p>
 
@@ -143,6 +143,7 @@ Every worker gets the guard hooks, an allow-listed environment (no secrets, noth
 | `workbench done <app> <branch>` | Close out: remove the worktree and the branch, print the checklist |
 | `workbench status` | What the session-start hook prints |
 | `workbench doctor [--deep]` | Check the workspace and the install, PASS or FAIL per line. `--deep` runs the hook test suites |
+| `workbench update` | Fast-forward the install to GitHub now. It also runs by itself once a day |
 | `/workbench` | Open the pane |
 
 ## Configuration
@@ -153,13 +154,14 @@ Every worker gets the guard hooks, an allow-listed environment (no secrets, noth
 {
   "owner": "Sam",
   "autoInit": true,
+  "autoUpdate": true,
   "accounts": [ { "label": "main", "dir": "~/.claude" } ],
   "protectedBranches": ["main", "staging"],
   "models": { "orchestrator": "opus", "builder": "sonnet" }
 }
 ```
 
-Each workspace's `workbench.json` holds its apps, protected branches, ship patterns and models. Turn auto-setup off with `"autoInit": false`, or for one session with `WORKBENCH_AUTO=0 claude`.
+Each workspace's `workbench.json` holds its apps, protected branches, ship patterns and models. Turn auto-setup off with `"autoInit": false`, or for one session with `WORKBENCH_AUTO=0 claude`. Turn auto-update off with `"autoUpdate": false`, or `WORKBENCH_AUTOUPDATE=0`.
 
 Auto-setup only touches a folder that is completely empty (a `.DS_Store` is fine). It never touches your home folder, `/`, temp folders, hidden folders, the standard folders in your home (Desktop, Documents, Downloads and the rest), anything inside a git repo, or anything already inside a workspace.
 
@@ -171,15 +173,15 @@ Every workspace carries `AGENTS.md`, `.codex/agents/` (builder and critic) and `
 
 ## Tested
 
-840 automated checks, all passing on macOS with the stock bash 3.2 and Node 22:
+860 automated checks, all passing on macOS with the stock bash 3.2 and Node 22:
 
 | Suite | Checks |
 |---|---|
 | `guard-git` hook | 173 |
 | `guard-release` hook | 57 |
-| `session-start` hook: auto-setup eligibility, two sessions racing for one folder, the brief | 84 |
+| `session-start` hook: auto-setup eligibility, two sessions racing for one folder, the brief, the background update | 87 |
 | `install.sh`: idempotent, round-trips, never touches anything outside the folders it's given | 49 |
-| `workbench` CLI | 22 |
+| `workbench` CLI, including `update` | 39 |
 | End to end: empty folder to verified workspace | 73 |
 | The pane (`claude plugin test`) | 268 |
 | `claude-worker` | 114 |
@@ -190,8 +192,10 @@ Run the hook suites yourself with `workbench doctor --deep`.
 
 ## Update and uninstall
 
+workbench keeps itself up to date. Once a day, the first session to start fast-forwards `~/.workbench` to GitHub in the background, so the session never waits for it. The new version loads in the next session, or run `/reload-plugins` in an open one. It only fast-forwards: local changes, another branch or commits of your own leave the install alone. `workbench doctor` shows the last check, and `workbench update` runs one now.
+
 ```bash
-git -C ~/.workbench pull                 # then /reload-plugins in any open session
+workbench update                         # update now instead of waiting for the daily check
 ~/.workbench/install.sh --uninstall      # removes the hooks, links and plugin; keeps your config and workspaces
 rm -rf ~/.workbench ~/.config/workbench  # then, to remove everything
 ```

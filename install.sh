@@ -185,7 +185,7 @@ write_config() {
   local owner; owner=$(cd "$HOME" 2>/dev/null && git config --global --get user.name 2>/dev/null | awk '{print $1}'); [ -n "$owner" ] || owner=$(id -un 2>/dev/null)
   [ "$DRY" = 1 ] && { plan "write $CFG_FILE (owner: $owner)"; return 0; }
   mkdir -p "$(dirname "$CFG_FILE")" || { bad "cannot create $(dirname "$CFG_FILE")"; return 1; }
-  jq -n --arg o "$owner" '{owner:$o, autoInit:true, accounts:[{label:"main", dir:"~/.claude"}], protectedBranches:["main","staging"], models:{orchestrator:"opus", builder:"sonnet"}}' > "$CFG_FILE" \
+  jq -n --arg o "$owner" '{owner:$o, autoInit:true, autoUpdate:true, accounts:[{label:"main", dir:"~/.claude"}], protectedBranches:["main","staging"], models:{orchestrator:"opus", builder:"sonnet"}}' > "$CFG_FILE" \
     && say "  done wrote $CFG_FILE" || bad "cannot write $CFG_FILE"
 }
 

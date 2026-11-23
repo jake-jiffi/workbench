@@ -3,6 +3,8 @@
 #  1. startup in an empty, eligible folder: create a workspace there (workbench init) and print a short brief.
 #  2. inside a workspace: print the status (apps fetched, PRs, what to look at). Output becomes session context.
 #  3. anywhere else: print nothing, fast.
+# Every start also hands `workbench update --if-due` to the background: at most once a day it fast-forwards the
+# install, and it never delays or fails the session. Off: WORKBENCH_AUTOUPDATE=0 or "autoUpdate": false.
 # It never fails the session: every path exits 0.
 # Off switches: WORKBENCH_AUTO=0, or "autoInit": false (anything but true) in the private config.
 # Regression suite: test-session-start.sh beside this file.
@@ -47,6 +49,7 @@ auto_init() { # auto_init <physical dir>
 
 main() {
   command -v jq >/dev/null 2>&1 || return 0
+  [ "${WORKBENCH_AUTOUPDATE:-1}" = 0 ] || ( nohup "$here/../bin/workbench" update --if-due --quiet </dev/null >/dev/null 2>&1 & )
   local input parsed src cwd phys root
   input=$(cat)
   parsed=$(printf '%s' "$input" | jq -r '(.source // ""), (.cwd // "")' 2>/dev/null) || return 0
