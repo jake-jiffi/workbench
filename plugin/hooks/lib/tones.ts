@@ -4,7 +4,9 @@ import type { Tone } from './cards'
 
 export const QUIET_MS = 10 * 60_000
 export const RECENT_MS = 3 * 3600_000
-export const ENDED = ['completed', 'failed', 'killed']
+// Ended: done or failed; stopped (the engine says killed or stopped); finished and waiting for a follow-up (a named
+// builder goes idle, never completed, and runs again when messaged); or gone from the engine's agent list.
+export const ENDED = ['completed', 'failed', 'killed', 'stopped', 'idle', 'gone']
 export const isEnded = (status: string) => ENDED.includes(status)
 
 export const isQuietWorker = (w: Worker, now: number) => !isEnded(w.status) && now - (w.lastActiveAt ?? w.startedAt) > QUIET_MS

@@ -34,9 +34,13 @@ export function workersCard($: EngineInterface, c: Ctx, list: Worker[], cw: CWor
     // Red is for what needs attention: a failure or a quiet worker. A worker stopped after its work is done is grey.
     // A failure inside five minutes of an account swap that reads as an account fault is amber, tagged "account": not a code fault.
     const isAccount = w.tag === 'account'
-    const mark = w.status === 'completed' ? '✓' : isAccount && w.status !== 'running' ? '!' : isAccount ? '!' : w.status === 'failed' ? '✗' : w.status === 'killed' ? '■' : isQuiet ? '!' : '▶'
-    const color = w.status === 'completed' ? 'success' : isAccount ? 'warning' : w.status === 'failed' || isQuiet ? 'error' : w.status === 'killed' ? 'subtle' : 'warning'
-    const state = isAccount ? ' account' : w.status === 'killed' ? ' stopped' : w.status === 'failed' ? ' failed' : ''
+    // Idle is a named builder that finished and waits for a follow-up: done. Stopped and killed are grey, and so is gone
+    // (no longer in the engine's list, so how it ended is not known).
+    const isDone = w.status === 'completed' || w.status === 'idle'
+    const isStopped = w.status === 'killed' || w.status === 'stopped' || w.status === 'gone'
+    const mark = isDone ? '✓' : isAccount && w.status !== 'running' ? '!' : isAccount ? '!' : w.status === 'failed' ? '✗' : isStopped ? '■' : isQuiet ? '!' : '▶'
+    const color = isDone ? 'success' : isAccount ? 'warning' : w.status === 'failed' || isQuiet ? 'error' : isStopped ? 'subtle' : 'warning'
+    const state = isAccount ? ' account' : w.status === 'gone' ? ' ended' : isStopped ? ' stopped' : w.status === 'failed' ? ' failed' : w.status === 'idle' ? ' idle' : ''
     const age = w.startedAt > 0 ? ` ${ago((w.endedAt ?? now) - w.startedAt)}` : ''
     const where = w.worktree ? ` ${w.worktree.replace('worktrees/', '')}` : ''
     const desc = trunc(w.description, Math.max(12, Math.floor(room * 0.6)))

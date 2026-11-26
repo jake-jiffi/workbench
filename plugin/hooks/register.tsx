@@ -35,6 +35,8 @@ const PANE = 'workbench'
 const TITLE = 'Workbench'
 const WATCH_MS = 15_000
 const WORKER_POLL_MS = 5_000
+// How long a spawned worker may be missing from the engine's agent list before it counts as gone.
+const UNLISTED_GRACE_MS = 2 * 60_000
 const GITHUB_POLL_MS = 90_000
 
 // The atoms are declared here: the engine's scan reads state from the file that declares it.
@@ -123,11 +125,22 @@ async function refresh($: EngineInterface) {
 async function syncWorkers($: EngineInterface) {
   if (dormant()) return
   const agents = await $.agent.list()
+  // A list that cannot be read says nothing about who stopped.
+  if (!Array.isArray(agents)) return
   const now = await $.clock.now()
   const finished: Worker[] = []
   await update($, workers, list => {
     finished.length = 0
     const byId = new Map(list.map(w => [w.id, w]))
+    const listed = new Set(agents.map(a => a.id))
+    // A worker the engine no longer lists has ended: a stopped one drops out of the list, and its last status would
+    // otherwise read "running" for ever. One just spawned gets a grace period, since the spawn is recorded before the
+    // engine lists it. No toast: it may only be a blip, and the next read puts it back if it is listed again.
+    for (const w of list) {
+      if (listed.has(w.id) || isEnded(w.status)) continue
+      if (w.startedAt > 0 && now - w.startedAt < UNLISTED_GRACE_MS) continue
+      byId.set(w.id, { ...w, status: 'gone', endedAt: now })
+    }
     for (const agent of agents) {
       const was = byId.get(agent.id)
       // Seen first here (not at spawn), its start time is unknown: 0, and the row shows no age.
@@ -147,7 +160,8 @@ async function syncWorkers($: EngineInterface) {
     return [...byId.values()].slice(-40)
   })
   for (const w of finished) {
-    if (w.status === 'completed') $.ui.toast(`Done: ${w.description}`)
+    // A named builder that went idle has finished its work, the same as a completed one.
+    if (w.status === 'completed' || w.status === 'idle') $.ui.toast(`Done: ${w.description}`)
     else void $.ui.notify(`Worker ${w.status}: ${w.description}`, { title: 'Workbench' })
   }
   if (agents.some(a => !isEnded(a.status))) await update($, tick, n => n + 1)
